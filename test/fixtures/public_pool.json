@@ -1,0 +1,8 @@
+{
+  "bestDifficulty": 1234.0,
+  "workersCount": 2,
+  "workers": [
+    {"hashRate": 1000.0},
+    {"hashRate": 2500.0}
+  ]
+}

@@ -11,6 +11,7 @@
 #include <lvgl.h>
 
 #include "monitor.h"
+#include "poolstats/PoolStatsService.h"
 #include "drivers/storage/storage.h"
 #include "wManager.h"
 #include "ui.h"
@@ -334,9 +335,18 @@ void wt32Display_NoScreen(unsigned long mElapsed)
 
     pool_data pdata = getPoolData();
 
-    lv_label_set_text(ui_lblWorkers, String(pdata.workersCount).c_str());
-    lv_label_set_text(ui_lblMaxDifficulty, pdata.bestDifficulty.c_str());
-    lv_label_set_text(ui_lblTotHashrate, pdata.workersHash.c_str());
+    char poolLabel[POOL_NAME_MAX_LENGTH + 10] = {};
+    const char *stateLabel = poolMetricStateLabel(pdata.state);
+    if (stateLabel[0] == '\0') {
+      snprintf(poolLabel, sizeof(poolLabel), "%s", pdata.poolName);
+    } else {
+      snprintf(poolLabel, sizeof(poolLabel), "%s (%s)", pdata.poolName,
+               stateLabel);
+    }
+    lv_label_set_text(ui_lblPool, poolLabel);
+    lv_label_set_text(ui_lblWorkers, pdata.workersCount);
+    lv_label_set_text(ui_lblMaxDifficulty, pdata.bestDifficulty);
+    lv_label_set_text(ui_lblTotHashrate, pdata.totalHashRate);
   }
 }
 

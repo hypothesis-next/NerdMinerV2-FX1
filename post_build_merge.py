@@ -118,6 +118,16 @@ def create_merged_firmware(source, target, env):
     bootloader_file = build_dir / "bootloader.bin"
     partitions_file = build_dir / "partitions.bin"
     boot_app0_file = build_dir / "boot_app0.bin"
+    if not boot_app0_file.exists():
+        framework_dir = env.PioPlatform().get_package_dir(
+            "framework-arduinoespressif32"
+        )
+        if framework_dir:
+            framework_boot_app0 = (
+                Path(framework_dir) / "tools" / "partitions" / "boot_app0.bin"
+            )
+            if framework_boot_app0.exists():
+                boot_app0_file = framework_boot_app0
     firmware_file = build_dir / "firmware.bin"
     
     # Check if firmware exists
@@ -135,9 +145,9 @@ def create_merged_firmware(source, target, env):
     version_dir = project_dir / "firmware" / version
     version_dir.mkdir(parents=True, exist_ok=True)
     
-    # Output filenames (simplified names)
-    factory_file = version_dir / f"{env_name}_factory.bin"
-    update_file = version_dir / f"{env_name}_firmware.bin"
+    artifact_prefix = f"NerdMinerV2-{version}-{env_name}"
+    factory_file = version_dir / f"{artifact_prefix}-factory.bin"
+    update_file = version_dir / f"{artifact_prefix}-firmware.bin"
     
     # 1. Create update file (just copy firmware.bin)
     try:

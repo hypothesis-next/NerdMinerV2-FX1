@@ -11,12 +11,14 @@
 #include "media/Free_Fonts.h"
 #include "version.h"
 #include "monitor.h"
+#include "poolstats/PoolStatsService.h"
 #include "OpenFontRender.h"
 #ifdef TOUCH_ENABLE
 #include "TouchHandler.h"
 #endif
 #include <Arduino.h>
 #include <esp_adc_cal.h>
+#include <string.h>
 
 #define WIDTH 320
 #define HEIGHT 240
@@ -92,9 +94,6 @@ void t_hmiDisplay_Init(void)
   pinMode(LED_PIN, OUTPUT);
   pinMode(BK_LIGHT_PIN, OUTPUT);
   digitalWrite(BK_LIGHT_PIN, BK_LIGHT_LEVEL);
-  pData.bestDifficulty = "0";
-  pData.workersHash = "0";
-  pData.workersCount = 0;
 }
 
 void t_hmiDisplay_AlternateScreenState(void)
@@ -110,21 +109,56 @@ void t_hmiDisplay_AlternateRotation(void)
 }
 
 
+void drawPoolValue(const char *value, int16_t x, int16_t y,
+                   uint16_t panelColor) {
+  if (strcmp(value, "N/A") == 0 || strcmp(value, "TESTNET") == 0) {
+    background.setTextColor(TFT_BLACK, panelColor);
+    background.setTextDatum(MC_DATUM);
+    background.setTextFont(strcmp(value, "TESTNET") == 0 ? 1 : 2);
+    background.drawString(value, x, y);
+    return;
+  }
+  render.cdrawString(value, x, y, TFT_BLACK);
+}
+
 void printPoolData()
 {
   // Serial.print("\nPool ============ Free Heap:");
   // Serial.println(ESP.getFreeHeap()); 
   pData = getPoolData();
 
-  background.pushImage(0, 170, 320, 70, bottonPoolScreen);
+  const uint16_t headerColor = 0x4ACD;
+  const uint16_t panelColor = 0x0E3E;
+  background.fillRect(0, 170, 320, 20, headerColor);
+  background.fillRect(0, 190, 320, 50, panelColor);
+  background.drawFastVLine(106, 190, 50, headerColor);
+  background.drawFastVLine(210, 190, 50, headerColor);
+  background.setTextColor(TFT_WHITE, headerColor);
+  const char *stateLabel = poolMetricStateLabel(pData.state);
+  const int16_t poolRight = stateLabel[0] == '\0' ? 316 : 270;
+  background.setTextDatum(MC_DATUM);
+  background.setTextFont(2);
+  if (background.textWidth(pData.poolName) > poolRight - 4) {
+    background.setTextFont(1);
+  }
+  background.drawString(pData.poolName, (poolRight + 4) / 2, 180);
+  if (stateLabel[0] != '\0') {
+    background.setTextDatum(MR_DATUM);
+    background.setTextFont(1);
+    background.drawString(stateLabel, 316, 180);
+  }
+  background.setTextColor(TFT_BLACK, panelColor);
+  background.setTextDatum(TC_DATUM);
+  background.setTextFont(1);
+  background.drawString("Best Ever", 53, 192);
+  background.drawString("WORKERS", 158, 192);
+  background.drawString("Total Hash Rate", 265, 192);
   render.setLineSpaceRatio(1);
-  
-  render.setFontSize(24);
-  render.drawString(String(pData.workersCount).c_str(), 146, 170+35, TFT_BLACK);
-
-  render.setFontSize(18);
-  render.drawString(pData.workersHash.c_str(), 216, 170+34, TFT_BLACK);
-  render.drawString(pData.bestDifficulty.c_str(), 5, 170+34, TFT_BLACK);
+  render.setAlignment(Align::MiddleCenter);
+  render.setFontSize(20);
+  drawPoolValue(pData.bestDifficulty, 53, 220, panelColor);
+  drawPoolValue(pData.workersCount, 158, 220, panelColor);
+  drawPoolValue(pData.totalHashRate, 265, 220, panelColor);
   // printBatteryVoltage();
 }
 

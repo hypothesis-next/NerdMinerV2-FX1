@@ -1,0 +1,14 @@
+{
+  "stats": [
+    {
+      "bestEver": 7654321.0,
+      "bestShare": 4321.0,
+      "hashrate5m": 123456.0
+    }
+  ],
+  "workers": [
+    {"workerName": "worker-a", "lastUpdate": "2026-09-10T11:55:00.000Z"},
+    {"workerName": "worker-b", "lastUpdate": "2026-09-09T12:00:00Z"},
+    {"workerName": "worker-c", "lastUpdate": "2026-09-09T11:59:59Z"}
+  ]
+}

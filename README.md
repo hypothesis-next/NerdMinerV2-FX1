@@ -1,4 +1,43 @@
-# NerdSoloMiner
+# NerdMiner v2 Multi-Pool Dashboard
+
+> **Unofficial modification.** This repository is an independent fork of
+> NerdMiner_v2. It is not an official BitMaker-hub, NerdMiner, HeliosPool, or
+> pool-operator release, and no endorsement or affiliation is implied.
+
+This fork preserves the V1.8.3 Stratum mining implementation and replaces the
+pool dashboard's fixed Public Pool behavior with a provider-based statistics
+layer. Release version: **V1.8.3-multipool.1**.
+
+Key behavior:
+
+- `public-pool.io`, `pool.nerdminers.org`, `pool.sethforprivacy.com`, and
+  `pool.solomining.de` keep their compatible remote statistics integrations.
+- `btc.heliospool.com` uses HeliosPool's compact user snapshot endpoint.
+- Unknown Stratum hosts continue mining, display their normalized hostname,
+  make no dashboard API request, and show `N/A` for remote-only metrics.
+- Statistics requests run in a separate low-priority task with bounded
+  timeouts, last-good caching, stale state, and exponential failure backoff.
+- The target release artifact is built for `ESP32_2432S028_2USB`.
+
+See [multi-pool architecture](docs/MULTIPOOL_ARCHITECTURE.md),
+[build and test instructions](docs/BUILD_AND_TEST.md), and the
+[hardware validation checklist](docs/HARDWARE_VALIDATION.md).
+
+## Flashing this fork on ESP32_2432S028_2USB
+
+For a complete first installation, flash
+`NerdMinerV2-V1.8.3-multipool.1-ESP32_2432S028_2USB-factory.bin` at address
+`0x0000`. For an application-only update on a board that already has a
+compatible bootloader and partition table, flash
+`NerdMinerV2-V1.8.3-multipool.1-ESP32_2432S028_2USB-firmware.bin` at
+`0x10000`.
+
+Use the factory image for the first test device. Back up configuration details
+before flashing and select only the `ESP32_2432S028_2USB` artifact.
+
+---
+
+# Upstream NerdSoloMiner documentation
 
 **The NerdSoloMiner v2**
 

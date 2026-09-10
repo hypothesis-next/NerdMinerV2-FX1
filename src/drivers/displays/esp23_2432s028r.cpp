@@ -5,16 +5,17 @@
 #include <TFT_eSPI.h>
 #include <TFT_eTouch.h>
 #include "media/images_320_170.h"
-#include "media/images_bottom_320_70.h"
 #include "media/myFonts.h"
 #include "media/Free_Fonts.h"
 #include "version.h"
 #include "monitor.h"
 #include "OpenFontRender.h"
 #include <SPI.h>
+#include <string.h>
 #include "rotation.h"
 #include "drivers/storage/nvMemory.h"
 #include "drivers/storage/storage.h"
+#include "poolstats/PoolStatsService.h"
 
 #define WIDTH 130 //320
 #define HEIGHT 170 
@@ -101,9 +102,6 @@ void esp32_2432S028R_Init(void)
   digitalWrite(LED_PIN, LOW);
   digitalWrite(LED_PIN_B, HIGH);
   digitalWrite(LED_PIN_G, HIGH);
-  pData.bestDifficulty = "0";
-  pData.workersHash = "0";
-  pData.workersCount = 0;
   //Serial.println("=========== Fim Display ==============") ;
 }
 
@@ -127,6 +125,18 @@ void esp32_2432S028R_AlternateRotation(void)
 
 bool bottomScreenBlue = true;
 
+void drawPoolValue(const char *value, int16_t x, int16_t y,
+                   uint16_t panelColor) {
+  if (strcmp(value, "N/A") == 0 || strcmp(value, "TESTNET") == 0) {
+    background.setTextColor(TFT_BLACK, panelColor);
+    background.setTextDatum(MC_DATUM);
+    background.setTextFont(strcmp(value, "TESTNET") == 0 ? 1 : 2);
+    background.drawString(value, x, y);
+    return;
+  }
+  render.cdrawString(value, x, y, TFT_BLACK);
+}
+
 void printheap(){
   Serial.print("$$ Free Heap:");
   Serial.println(ESP.getFreeHeap()); 
@@ -149,62 +159,73 @@ bool createBackgroundSprite(int16_t wdt, int16_t hgt){  // Set the background an
   return background.created();
 }
 
-extern unsigned long mPoolUpdate;
-
 void printPoolData(){
-  if ((hasChangedScreen) || (mPoolUpdate == 0) || (millis() - mPoolUpdate > UPDATE_POOL_min * 60 * 1000)){     
-      if (Settings.PoolAddress != "tn.vkbit.com") { 
-          pData = getPoolData();             
-          background.createSprite(320,50); //Background Sprite
-          if (!background.created()) {    
-            Serial.println("###### POOL SPRITE ERROR ######");
-          // Serial.printf("Pool data W:%d H:%s D:%s\n", pData.workersCount, pData.workersHash, pData.bestDifficulty);
-            printheap();        
-          }       
-          background.setSwapBytes(true);
-          if (bottomScreenBlue) {
-            background.pushImage(0, -20, 320, 70, bottonPoolScreen);
-            tft.pushImage(0,170,320,20,bottonPoolScreen);      
-          } else {
-            background.pushImage(0, -20, 320, 70, bottonPoolScreen_g);
-            tft.pushImage(0,170,320,20,bottonPoolScreen_g);
-          }
-                
-          render.setDrawer(background); // Link drawing object to background instance (so font will be rendered on background)
-          render.setLineSpaceRatio(1);
-          
-          render.setFontSize(24);
-          render.cdrawString(String(pData.workersCount).c_str(), 157, 16, TFT_BLACK);
-          render.setFontSize(18);
-          render.setAlignment(Align::BottomRight);
-          render.cdrawString(pData.workersHash.c_str(), 265, 14, TFT_BLACK);
-          render.setAlignment(Align::BottomLeft);
-          render.cdrawString(pData.bestDifficulty.c_str(), 54, 14, TFT_BLACK);
-          background.pushSprite(0,190);      
-          background.deleteSprite();
-      } else {
-        pData.bestDifficulty = "TESTNET";
-        pData.workersHash = "TESTNET";
-        pData.workersCount = 1;
-        tft.fillRect(0,170,320,70, TFT_DARKGREEN);        
-        background.createSprite(320,40); //Background Sprite
-        background.fillSprite(TFT_DARKGREEN);
-          if (!background.created()) {    
-            Serial.println("###### POOL SPRITE ERROR ######");
-          // Serial.printf("Pool data W:%d H:%s D:%s\n", pData.workersCount, pData.workersHash, pData.bestDifficulty);
-            printheap();        
-          }
-        background.setFreeFont(FF24);
-        background.setTextDatum(TL_DATUM);
-        background.setTextSize(1);
-        background.setTextColor(TFT_WHITE, TFT_DARKGREEN);        
-        background.drawString("TESTNET", 50, 0, GFXFF);
-        background.pushSprite(0,185);  
-        mPoolUpdate = millis();
-        Serial.println("Testnet");
-        background.deleteSprite();
-      }
+  static uint32_t lastRevision = UINT32_MAX;
+  static PoolMetricState lastState = PoolMetricState::Error;
+  static bool lastThemeBlue = false;
+
+  pData = getPoolData();
+  if (!hasChangedScreen && pData.revision == lastRevision &&
+      pData.state == lastState && bottomScreenBlue == lastThemeBlue) {
+    return;
   }
+
+  const uint16_t headerColor = 0x4ACD;
+  const uint16_t panelColor = bottomScreenBlue ? 0x0E3E : 0x9580;
+
+  background.createSprite(320, 20);
+  if (!background.created()) {
+    Serial.println("###### POOL HEADER SPRITE ERROR ######");
+    printheap();
+    return;
+  }
+  background.fillSprite(headerColor);
+  background.setTextColor(TFT_WHITE, headerColor);
+  const char *stateLabel = poolMetricStateLabel(pData.state);
+  const int16_t poolRight = stateLabel[0] == '\0' ? 316 : 270;
+  background.setTextDatum(MC_DATUM);
+  background.setTextFont(2);
+  if (background.textWidth(pData.poolName) > poolRight - 4) {
+    background.setTextFont(1);
+  }
+  background.drawString(pData.poolName, (poolRight + 4) / 2, 10);
+  if (stateLabel[0] != '\0') {
+    background.setTextDatum(MR_DATUM);
+    background.setTextFont(1);
+    background.drawString(stateLabel, 316, 10);
+  }
+  background.pushSprite(0, 170);
+  background.deleteSprite();
+
+  background.createSprite(320, 50);
+  if (!background.created()) {
+    Serial.println("###### POOL DATA SPRITE ERROR ######");
+    printheap();
+    return;
+  }
+  background.fillSprite(panelColor);
+  background.drawFastVLine(106, 0, 50, headerColor);
+  background.drawFastVLine(210, 0, 50, headerColor);
+  background.setTextColor(TFT_BLACK, panelColor);
+  background.setTextDatum(TC_DATUM);
+  background.setTextFont(1);
+  background.drawString("Best Ever", 53, 2);
+  background.drawString("WORKERS", 158, 2);
+  background.drawString("Total Hash Rate", 265, 2);
+
+  render.setDrawer(background);
+  render.setLineSpaceRatio(1);
+  render.setAlignment(Align::MiddleCenter);
+  render.setFontSize(20);
+  drawPoolValue(pData.bestDifficulty, 53, 30, panelColor);
+  drawPoolValue(pData.workersCount, 158, 30, panelColor);
+  drawPoolValue(pData.totalHashRate, 265, 30, panelColor);
+  background.pushSprite(0, 190);
+  background.deleteSprite();
+
+  lastRevision = pData.revision;
+  lastState = pData.state;
+  lastThemeBlue = bottomScreenBlue;
 }
 
 

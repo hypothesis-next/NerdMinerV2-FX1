@@ -10,6 +10,7 @@
 #include "monitor.h"
 #include "drivers/storage/storage.h"
 #include "drivers/devices/device.h"
+#include "poolstats/PoolStatsService.h"
 
 extern uint32_t templates;
 extern uint32_t hashes;
@@ -35,7 +36,6 @@ unsigned int bitcoin_price=0;
 String current_block = "793261";
 global_data gData;
 pool_data pData;
-String poolAPIUrl;
 
 
 void setup_monitor(void){
@@ -48,9 +48,9 @@ void setup_monitor(void){
     timeClient.setTimeOffset(3600 * Settings.Timezone);
 
     Serial.println("TimeClient setup done");
-#ifdef SCREEN_WORKERS_ENABLE
-    poolAPIUrl = getPoolAPIUrl();
-    Serial.println("poolAPIUrl: " + poolAPIUrl);
+#if defined(SCREEN_WORKERS_ENABLE) || defined(WT32_DISPLAY)
+    beginPoolStatsService(Settings.PoolAddress.c_str(), Settings.PoolPort,
+                          Settings.BtcWallet);
 #endif
 }
 
@@ -202,8 +202,6 @@ String getBTCprice(void){
 unsigned long mTriggerUpdate = 0;
 unsigned long initialMillis = millis();
 unsigned long initialTime = 0;
-unsigned long mPoolUpdate = 0;
-
 void getTime(unsigned long* currentHours, unsigned long* currentMinutes, unsigned long* currentSeconds){
   
   //Check if need an NTP call to check current time
@@ -405,111 +403,7 @@ coin_data getCoinData(unsigned long mElapsed)
   return data;
 }
 
-String getPoolAPIUrl(void) {
-    poolAPIUrl = String(getPublicPool);
-    if (Settings.PoolAddress == "public-pool.io") {
-        poolAPIUrl = "https://public-pool.io:40557/api/client/";
-    } 
-    else {
-        if (Settings.PoolAddress == "pool.nerdminers.org") {
-            poolAPIUrl = "https://pool.nerdminers.org/users/";
-        }
-        else {
-            switch (Settings.PoolPort) {
-                case 3333:
-                    if (Settings.PoolAddress == "pool.sethforprivacy.com")
-                        poolAPIUrl = "https://pool.sethforprivacy.com/api/client/";
-                    if (Settings.PoolAddress == "pool.solomining.de")
-                        poolAPIUrl = "https://pool.solomining.de/api/client/";
-                    // Add more cases for other addresses with port 3333 if needed
-                    break;
-                case 2018:
-                    // Local instance of public-pool.io on Umbrel or Start9
-                    poolAPIUrl = "http://" + Settings.PoolAddress + ":2019/api/client/";
-                    break;
-                default:
-                    poolAPIUrl = String(getPublicPool);
-                    break;
-            }
-        }
-    }
-    return poolAPIUrl;
-}
-
 pool_data getPoolData(void){
-    //pool_data pData;    
-    if((mPoolUpdate == 0) || (millis() - mPoolUpdate > UPDATE_POOL_min * 60 * 1000)){      
-        if (WiFi.status() != WL_CONNECTED) return pData;            
-        //Make first API call to get global hash and current difficulty
-        HTTPClient http;
-        http.setTimeout(10000);        
-        try {          
-          String btcWallet = Settings.BtcWallet;
-          // Serial.println(btcWallet);
-          if (btcWallet.indexOf(".")>0) btcWallet = btcWallet.substring(0,btcWallet.indexOf("."));
-#ifdef SCREEN_WORKERS_ENABLE
-          Serial.println("Pool API : " + poolAPIUrl+btcWallet);
-          http.begin(poolAPIUrl+btcWallet);
-#else
-          http.begin(String(getPublicPool)+btcWallet);
-#endif
-          int httpCode = http.GET();
-          if (httpCode == HTTP_CODE_OK) {
-              String payload = http.getString();
-              // Serial.println(payload);
-              StaticJsonDocument<300> filter;
-              filter["bestDifficulty"] = true;
-              filter["workersCount"] = true;
-              filter["workers"][0]["sessionId"] = true;
-              filter["workers"][0]["hashRate"] = true;
-              StaticJsonDocument<2048> doc;
-              deserializeJson(doc, payload, DeserializationOption::Filter(filter));
-              //Serial.println(serializeJsonPretty(doc, Serial));
-              if (doc.containsKey("workersCount")) pData.workersCount = doc["workersCount"].as<int>();
-              const JsonArray& workers = doc["workers"].as<JsonArray>();
-              float totalhashs = 0;
-              for (const JsonObject& worker : workers) {
-                totalhashs += worker["hashRate"].as<double>();
-                /* Serial.print(worker["sessionId"].as<String>()+": ");
-                Serial.print(" - "+worker["hashRate"].as<String>()+": ");
-                Serial.println(totalhashs); */
-              }
-              char totalhashs_s[16] = {0};
-              suffix_string(totalhashs, totalhashs_s, 16, 0);
-              pData.workersHash = String(totalhashs_s);
-
-              double temp;
-              if (doc.containsKey("bestDifficulty")) {
-              temp = doc["bestDifficulty"].as<double>();            
-              char best_diff_string[16] = {0};
-              suffix_string(temp, best_diff_string, 16, 0);
-              pData.bestDifficulty = String(best_diff_string);
-              }
-              doc.clear();
-              mPoolUpdate = millis();
-              Serial.println("\n####### Pool Data OK!");               
-          } else {
-              Serial.println("\n####### Pool Data HTTP Error!");    
-              /* Serial.println(httpCode);
-              String payload = http.getString();
-              Serial.println(payload); */
-              // mPoolUpdate = millis();
-              pData.bestDifficulty = "P";
-              pData.workersHash = "E";
-              pData.workersCount = 0;
-              http.end();
-              return pData; 
-          }
-          http.end();
-        } catch(...) {
-          Serial.println("####### Pool Error!");          
-          // mPoolUpdate = millis();
-          pData.bestDifficulty = "P";
-          pData.workersHash = "Error";
-          pData.workersCount = 0;
-          http.end();
-          return pData;
-        } 
-    }
+    pData = getPoolStatsSnapshot();
     return pData;
 }
