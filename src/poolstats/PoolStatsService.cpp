@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <string.h>
+#include <time.h>
 
 #include "PoolRegistry.h"
 #include "PoolStatsPolicy.h"
@@ -11,6 +12,9 @@
 namespace {
 
 constexpr uint32_t WIFI_RECHECK_MS = 5UL * 1000UL;
+constexpr uint32_t CLOCK_RECHECK_MS = 5UL * 1000UL;
+constexpr time_t MIN_VALID_TLS_TIME = 1704067200;  // 2024-01-01 UTC
+constexpr const char *NTP_SERVER = "europe.pool.ntp.org";
 constexpr uint32_t MIN_FREE_HEAP = 45000;
 constexpr uint32_t MIN_LARGEST_HEAP_BLOCK = 24000;
 // TLS setup in WiFiClientSecure exceeds 10 KiB on classic ESP32. Keep the
@@ -24,6 +28,7 @@ PoolStatsSnapshot snapshot{};
 TaskHandle_t serviceTaskHandle = nullptr;
 char lastModified[48] = {};
 uint32_t nextAttemptMs = 0;
+bool timeSyncStarted = false;
 
 void copyText(char *destination, size_t destinationSize, const char *source) {
   if (destinationSize == 0) return;
@@ -39,6 +44,14 @@ void setUnavailableValues(PoolStatsSnapshot &value) {
 
 bool timeReached(uint32_t now, uint32_t target) {
   return static_cast<int32_t>(now - target) >= 0;
+}
+
+bool needsTlsClock() {
+  return strncmp(identity.definition.apiBaseUrl, "https://", 8) == 0;
+}
+
+bool tlsClockReady() {
+  return time(nullptr) >= MIN_VALID_TLS_TIME;
 }
 
 void publishSnapshot(PoolStatsSnapshot value) {
@@ -89,7 +102,15 @@ void poolStatsTask(void *) {
       }
       nextAttemptMs = now + WIFI_RECHECK_MS;
     } else if (timeReached(now, nextAttemptMs)) {
-      refreshStats(now);
+      if (needsTlsClock() && !tlsClockReady()) {
+        if (!timeSyncStarted) {
+          configTime(0, 0, NTP_SERVER);
+          timeSyncStarted = true;
+        }
+        nextAttemptMs = now + CLOCK_RECHECK_MS;
+      } else {
+        refreshStats(now);
+      }
     }
     vTaskDelay(pdMS_TO_TICKS(250));
   }

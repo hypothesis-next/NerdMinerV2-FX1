@@ -6,7 +6,7 @@
 
 This fork preserves the V1.8.3 Stratum mining implementation and replaces the
 pool dashboard's fixed Public Pool behavior with a provider-based statistics
-layer. The hardware hotfix release is **V1.8.3-multipool-perf.2**; the
+layer. The hardware hotfix release is **V1.8.3-multipool-perf.3**; the
 previous **V1.8.3-multipool.1** release remains the rollback baseline.
 
 Key behavior:

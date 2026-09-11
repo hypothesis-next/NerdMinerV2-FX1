@@ -1,4 +1,4 @@
-# V1.8.3-multipool-perf.2 test release notes
+# V1.8.3-multipool-perf.3 test release notes
 
 This is an unofficial NerdMiner_v2 performance and correctness test build. It
 is not an official or endorsed release of NerdMiner, BitMaker-hub, HeliosPool,
@@ -6,7 +6,8 @@ or another pool operator.
 
 This revision increases the isolated PoolStats task stack from 10 KiB to 16 KiB
 after physical classic-ESP32 testing demonstrated a stack-canary panic in the
-mbedTLS entropy/TLS connection path. Mining and UI behavior are unchanged.
+mbedTLS entropy/TLS connection path. It also synchronizes the ESP32 system clock
+before verified HTTPS statistics requests. Mining and UI behavior are unchanged.
 
 The release preserves the V1.8.3-multipool.1 UI and hybrid mining architecture.
 It fixes exact block-target comparison, gives workers a full-width atomic job

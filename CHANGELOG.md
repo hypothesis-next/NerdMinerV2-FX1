@@ -1,5 +1,15 @@
 # Changelog
 
+## V1.8.3-multipool-perf.3 - 2026-09-11
+
+Follow-up hotfix for verified HTTPS pool statistics on physical hardware.
+
+### Fixed
+
+- Start non-blocking system time synchronization after Wi-Fi connects and defer
+  HTTPS statistics requests until the ESP32 clock is valid for certificate
+  verification. NTP failure remains isolated from mining.
+
 ## V1.8.3-multipool-perf.2 - 2026-09-11
 
 Hardware-validated hotfix for the HeliosPool statistics task.

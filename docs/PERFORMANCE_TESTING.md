@@ -1,6 +1,6 @@
 # Performance-test methodology
 
-V1.8.3-multipool-perf.2 is an unofficial correctness-first test build. It does
+V1.8.3-multipool-perf.3 is an unofficial correctness-first test build. It does
 not claim that one megahash per second has been achieved.
 
 ## What is validated on the host
