@@ -1,5 +1,20 @@
 # Changelog
 
+## V1.8.3-multipool-perf.2 - 2026-09-11
+
+Hardware-validated hotfix for the HeliosPool statistics task.
+
+### Fixed
+
+- Increased the isolated PoolStats task stack from 10 KiB to 16 KiB. The
+  previous allocation overflowed during the classic ESP32 mbedTLS entropy/TLS
+  setup path, causing a stack-canary panic and reboot loop after Wi-Fi connected.
+
+### Preserved
+
+- Mining, Stratum, independent SHA-256d validation, display layout, pool
+  providers, and performance architecture are unchanged.
+
 ## V1.8.3-multipool-perf.1 - 2026-09-11
 
 Performance and correctness test release based on V1.8.3-multipool.1.

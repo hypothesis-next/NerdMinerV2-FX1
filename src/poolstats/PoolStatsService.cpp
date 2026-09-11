@@ -13,7 +13,9 @@ namespace {
 constexpr uint32_t WIFI_RECHECK_MS = 5UL * 1000UL;
 constexpr uint32_t MIN_FREE_HEAP = 45000;
 constexpr uint32_t MIN_LARGEST_HEAP_BLOCK = 24000;
-constexpr uint32_t SERVICE_TASK_STACK = 10240;
+// TLS setup in WiFiClientSecure exceeds 10 KiB on classic ESP32. Keep the
+// network-only statistics task isolated from mining with a bounded 16 KiB stack.
+constexpr uint32_t SERVICE_TASK_STACK = 16384;
 constexpr UBaseType_t SERVICE_TASK_PRIORITY = 1;
 
 portMUX_TYPE snapshotMux = portMUX_INITIALIZER_UNLOCKED;
