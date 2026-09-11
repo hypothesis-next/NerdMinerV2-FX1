@@ -3,6 +3,7 @@
 #include "utils.h"
 #include "mining.h"
 #include "stratum.h"
+#include "crypto/ReferenceSha256.h"
 #include "mbedtls/sha256.h"
 
 #include <string.h>
@@ -122,19 +123,8 @@ bool isSha256Valid(const void* sha256)
 /****************** PREMINING CALCULATIONS ********************/
 
 
-bool checkValid(unsigned char* hash, unsigned char* target) {
-  bool valid = true;
-  unsigned char diff_target[32];
-  memcpy(diff_target, &target, 32);
-  //convert target to little endian for comparison
-  reverse_bytes(diff_target, 32);
-
-  for(uint8_t i=31; i>=0; i--) {
-    if(hash[i] > diff_target[i]) {
-      valid = false;
-      break;
-    }
-  }
+bool checkValid(const unsigned char* hash, const unsigned char* target) {
+  const bool valid = mining_validation::hashMeetsTarget(hash, target);
 
   #ifdef DEBUG_MINING
   if (valid) {
@@ -202,11 +192,7 @@ miner_data calculateMiningData(mining_subscribe& mWorker, mining_job mJob){
     // bytearray target
     size_t size_target = to_byte_array(target, 32, mMiner.bytearray_target);
 
-    for (size_t j = 0; j < 8; j++) {
-      mMiner.bytearray_target[j] ^= mMiner.bytearray_target[size_target - 1 - j];
-      mMiner.bytearray_target[size_target - 1 - j] ^= mMiner.bytearray_target[j];
-      mMiner.bytearray_target[j] ^= mMiner.bytearray_target[size_target - 1 - j];
-    }
+    reverse_bytes(mMiner.bytearray_target, size_target);
 
     // get extranonce2 - extranonce2 = hex(random.randint(0,2**32-1))[2:].zfill(2*extranonce2_size)
     //To review
@@ -605,4 +591,3 @@ uint32_t crc32_finish(uint32_t crc32)
 {
     return crc32 ^ 0xFFFFFFFF;
 }
-

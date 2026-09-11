@@ -214,7 +214,7 @@ bool tx_mining_submit(WiFiClient& client, mining_subscribe mWorker, mining_job m
     submit_id = id;
     sprintf(payload, "{\"id\":%u,\"method\":\"mining.submit\",\"params\":[\"%s\",\"%s\",\"%s\",\"%s\",\"%s\"]}\n",
         id,
-        mWorker.wName,//"bc1qvv469gmw4zz6qa4u4dsezvrlmqcqszwyfzhgwj", //mWorker.name,
+        mWorker.wName,
         mJob.job_id.c_str(),
         mWorker.extranonce2.c_str(),
         mJob.ntime.c_str(),

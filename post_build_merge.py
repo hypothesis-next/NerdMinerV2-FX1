@@ -12,6 +12,7 @@ extra_scripts =
 
 import os
 import subprocess
+import re
 from pathlib import Path
 
 Import("env")
@@ -89,16 +90,13 @@ def get_memory_layout(esp_type):
         }
 
 def get_firmware_version():
-    """Get firmware version from git"""
+    """Get the release identifier used by the firmware itself."""
     try:
-        result = subprocess.run(["git", "describe", "--tags", "--dirty"], 
-                              stdout=subprocess.PIPE, text=True, 
-                              cwd=env.subst("$PROJECT_DIR"))
-        if result.returncode == 0:
-            version = result.stdout.strip()
-            # Clean up version string
-            version = version.replace('Release', '').replace('release', '')
-            return version
+        version_header = Path(env.subst("$PROJECT_DIR")) / "src" / "version.h"
+        match = re.search(r'#define\s+CURRENT_VERSION\s+"([^"]+)"',
+                          version_header.read_text(encoding="utf-8"))
+        if match:
+            return match.group(1)
     except:
         pass
     return "dev"
@@ -175,26 +173,32 @@ def create_merged_firmware(source, target, env):
         # Add boot_app0 for ESP32 Classic and S2
         if 'boot_app0' in addresses:
             files_to_merge['boot_app0'] = boot_app0_file
+
+        missing = [str(path) for path in files_to_merge.values() if not path.exists()]
+        if missing:
+            raise RuntimeError("Required flash component is missing: " + ", ".join(missing))
+
+        occupied_ranges = []
         
         # Merge files at their respective addresses
         for file_type, file_path in files_to_merge.items():
-            if file_path.exists():
-                address = addresses[file_type]
-                with open(file_path, 'rb') as f:
-                    data = f.read()
-                
-                print(f"   📄 {file_type} at 0x{address:06X}: {len(data)} bytes")
-                
-                if address + len(data) <= merged_size:
-                    merged_data[address:address+len(data)] = data
-                    max_address = max(max_address, address + len(data))
-                else:
-                    print(f"⚠️  Warning: {file_type} too large, truncating")
-                    remaining = merged_size - address
-                    merged_data[address:address+remaining] = data[:remaining]
-                    max_address = merged_size
-            else:
-                print(f"⚠️  Warning: {file_type} not found: {file_path}")
+            address = addresses[file_type]
+            with open(file_path, 'rb') as f:
+                data = f.read()
+            end_address = address + len(data)
+
+            print(f"   📄 {file_type} at 0x{address:06X}: {len(data)} bytes")
+            if end_address > merged_size:
+                raise RuntimeError(f"{file_type} exceeds the 4 MB flash image")
+            for existing_type, existing_start, existing_end in occupied_ranges:
+                if address < existing_end and end_address > existing_start:
+                    raise RuntimeError(
+                        f"{file_type} overlaps {existing_type} in the flash image"
+                    )
+
+            merged_data[address:end_address] = data
+            occupied_ranges.append((file_type, address, end_address))
+            max_address = max(max_address, end_address)
         
         # Find actual end of data (round up to 4K boundary)
         actual_end = ((max_address + 4095) // 4096) * 4096
@@ -207,6 +211,7 @@ def create_merged_firmware(source, target, env):
         
     except Exception as e:
         print(f"❌ Error creating factory file: {e}")
+        raise
 
 # Add post-build hook
 env.AddPostAction("$BUILD_DIR/firmware.bin", create_merged_firmware)

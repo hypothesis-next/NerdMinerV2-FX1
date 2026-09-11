@@ -15,7 +15,7 @@
 extern uint32_t templates;
 extern uint32_t hashes;
 extern uint32_t Mhashes;
-extern uint32_t totalKHashes;
+extern uint64_t totalKHashes;
 extern uint32_t elapsedKHs;
 extern uint64_t upTime;
 
@@ -335,7 +335,7 @@ mining_data getMiningData(unsigned long mElapsed)
 
   data.completedShares = shares;
   data.totalMHashes = Mhashes;
-  data.totalKHashes = totalKHashes;
+  data.totalKHashes = String(static_cast<unsigned long long>(totalKHashes));
   data.currentHashRate = getCurrentHashRate(mElapsed);
   data.templates = templates;
   data.bestDiff = best_diff_string;
@@ -352,7 +352,7 @@ clock_data getClockData(unsigned long mElapsed)
   clock_data data;
 
   data.completedShares = shares;
-  data.totalKHashes = totalKHashes;
+  data.totalKHashes = String(static_cast<unsigned long long>(totalKHashes));
   data.currentHashRate = getCurrentHashRate(mElapsed);
   data.btcPrice = getBTCprice();
   data.blockHeight = getBlockHeight();
@@ -380,7 +380,7 @@ coin_data getCoinData(unsigned long mElapsed)
   updateGlobalData(); // Update gData vars asking mempool APIs
 
   data.completedShares = shares;
-  data.totalKHashes = totalKHashes;
+  data.totalKHashes = String(static_cast<unsigned long long>(totalKHashes));
   data.currentHashRate = getCurrentHashRate(mElapsed);
   data.btcPrice = getBTCprice();
   data.currentTime = getTime();

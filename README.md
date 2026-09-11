@@ -6,7 +6,8 @@
 
 This fork preserves the V1.8.3 Stratum mining implementation and replaces the
 pool dashboard's fixed Public Pool behavior with a provider-based statistics
-layer. Release version: **V1.8.3-multipool.1**.
+layer. The performance test release is **V1.8.3-multipool-perf.1**; the
+previous **V1.8.3-multipool.1** release remains the rollback baseline.
 
 Key behavior:
 
@@ -26,14 +27,20 @@ See [multi-pool architecture](docs/MULTIPOOL_ARCHITECTURE.md),
 ## Flashing this fork on ESP32_2432S028_2USB
 
 For a complete first installation, flash
-`NerdMinerV2-V1.8.3-multipool.1-ESP32_2432S028_2USB-factory.bin` at address
+`NerdMinerV2-V1.8.3-multipool-perf.1-ESP32_2432S028_2USB-factory.bin` at address
 `0x0000`. For an application-only update on a board that already has a
 compatible bootloader and partition table, flash
-`NerdMinerV2-V1.8.3-multipool.1-ESP32_2432S028_2USB-firmware.bin` at
+`NerdMinerV2-V1.8.3-multipool-perf.1-ESP32_2432S028_2USB-firmware.bin` at
 `0x10000`.
 
 Use the factory image for the first test device. Back up configuration details
 before flashing and select only the `ESP32_2432S028_2USB` artifact.
+
+This test release adds an independent candidate SHA-256d validator, exact
+network-target comparison, full-width job generations, and safer long-running
+hash accounting. It deliberately retains the proven hybrid hardware/software
+miner until physical-board timing can establish that a replacement is both
+faster and correct. See [performance methodology](docs/PERFORMANCE_TESTING.md).
 
 ---
 

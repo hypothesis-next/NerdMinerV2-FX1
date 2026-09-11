@@ -1,13 +1,16 @@
 import subprocess
+import re
+from pathlib import Path
 
 Import("env")
 
 def get_firmware_specifier_build_flag():
-    ret = subprocess.run(["git", "describe"], stdout=subprocess.PIPE, text=True) #Uses only annotated tags
-    #ret = subprocess.run(["git", "describe", "--tags"], stdout=subprocess.PIPE, text=True) #Uses any tags
-    build_version = ret.stdout.strip()
-    # fix unwanted and verbose tags
-    build_version = build_version.replace('Release', '')
+    version_header = Path(env.subst("$PROJECT_DIR")) / "src" / "version.h"
+    match = re.search(r'#define\s+CURRENT_VERSION\s+"([^"]+)"',
+                      version_header.read_text(encoding="utf-8"))
+    if not match:
+        raise RuntimeError("CURRENT_VERSION was not found in src/version.h")
+    build_version = match.group(1)
     build_flag = "-D AUTO_VERSION=\\\"" + build_version + "\\\""
     print ("Firmware Revision: " + build_version)
     return (build_flag)
