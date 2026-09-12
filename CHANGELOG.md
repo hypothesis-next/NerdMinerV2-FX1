@@ -1,5 +1,27 @@
 # Changelog
 
+## V1.8.3-multipool-perf.6 - local correctness candidate
+
+### Changed
+
+- Disabled the perf.5 SHA_TEXT-overlap experiment in normal builds because the
+  classic ESP32 hardware contract requires the shared text window to remain
+  untouched while the engine is busy.
+- Retained the experiment behind the explicit development-only
+  `NERDMINER_EXPERIMENTAL_SHA_TEXT_OVERLAP=1` build macro.
+- Safely overlaps only the nonce byte swap in CPU registers and waits for the
+  final hardware LOAD to become idle before reading the digest.
+- Corrected the unsupported SW/HW baseline decomposition in the performance
+  methodology; 340--350 kH/s is measured only as a combined value.
+
+### Validation status
+
+- Five million differential SHA cases and the full native mining-validation
+  suite pass with zero mismatches.
+- A clean `ESP32_2432S028_2USB` target build succeeds with the experimental
+  SHA_TEXT overlap absent from the release binary.
+- Physical throughput and long-runtime behavior remain **REQUIRES REAL HARDWARE**.
+
 ## V1.8.3-multipool-perf.5 - local performance candidate
 
 ### Changed

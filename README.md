@@ -6,7 +6,7 @@
 
 This fork preserves the V1.8.3 Stratum mining implementation and replaces the
 pool dashboard's fixed Public Pool behavior with a provider-based statistics
-layer. The current local release candidate is **V1.8.3-multipool-perf.5**; the
+layer. The current local release candidate is **V1.8.3-multipool-perf.6**; the
 previous **V1.8.3-multipool.1** release remains the rollback baseline.
 
 Key behavior:
@@ -27,10 +27,10 @@ See [multi-pool architecture](docs/MULTIPOOL_ARCHITECTURE.md),
 ## Flashing this fork on ESP32_2432S028_2USB
 
 For a complete first installation, flash
-`NerdMinerV2-V1.8.3-multipool-perf.5-ESP32_2432S028_2USB-factory.bin` at address
+`NerdMinerV2-V1.8.3-multipool-perf.6-ESP32_2432S028_2USB-factory.bin` at address
 `0x0000`. For an application-only update on a board that already has a
 compatible bootloader and partition table, flash
-`NerdMinerV2-V1.8.3-multipool-perf.5-ESP32_2432S028_2USB-firmware.bin` at
+`NerdMinerV2-V1.8.3-multipool-perf.6-ESP32_2432S028_2USB-firmware.bin` at
 `0x10000`.
 
 Use the factory image for the first test device. Back up configuration details
@@ -38,11 +38,11 @@ before flashing and select only the `ESP32_2432S028_2USB` artifact.
 
 This local test release adds an independent candidate SHA-256d validator, exact
 network-target comparison, full-width job generations, and safer long-running
-hash accounting. On classic ESP32 it also contains an experimental, guarded
-hardware-SHA register-fill pipeline. Byte-exact samples are independently
-recomputed during mining; any mismatch permanently disables the pipeline and
-recomputes the affected range with the retained sequential implementation.
-Throughput and peripheral behavior still require physical-board validation.
+hash accounting. The perf.5 hardware-SHA register-overlap experiment remains
+available only behind an explicit development build macro; it is disabled in
+this candidate because ESP-IDF requires SHA_TEXT to remain untouched while the
+engine is busy. The default classic-ESP32 worker uses the documented sequential
+peripheral contract. Throughput still requires physical-board validation.
 See [performance methodology](docs/PERFORMANCE_TESTING.md).
 
 ---

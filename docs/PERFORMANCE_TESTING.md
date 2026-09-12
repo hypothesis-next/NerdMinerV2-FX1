@@ -1,6 +1,6 @@
 # Performance-test methodology
 
-V1.8.3-multipool-perf.5 is an unofficial local release candidate. It does
+V1.8.3-multipool-perf.6 is an unofficial local release candidate. It does
 not claim that one megahash per second has been achieved.
 
 ## What is validated on the host
@@ -50,6 +50,34 @@ The new classic-ESP32 hardware pipeline was also compiled in isolation. Its
 to 781 bytes/64 bytes, and `-O3` to 897 bytes/96 bytes, with more spills. The
 candidate therefore retains `-Os` for this routine as well.
 
+## Physical-baseline attribution
+
+The only measured figure available for the target board is the user's combined
+340--350 kH/s observation. The current firmware has no independent SW/HW
+throughput counters, so an exact physical split cannot be recovered from that
+number.
+
+The earlier 140--150 kH/s SW estimate was produced by subtracting the historical
+`~200KH/s` hardware microbenchmark comment in
+`src/ShaTests/nerdSHA_HWTest.cpp` from the combined board result. That is not a
+valid decomposition: the historical microbenchmark reads the complete digest
+for every nonce, while the production hardware worker normally reads only the
+single word needed by its exact early filter.
+
+The same source records approximately 39--41 kH/s for the specialized software
+SHA routine. Its target `-Os` disassembly is a 15,955-byte, 112-byte-frame,
+fully unrolled routine. At 240 MHz, 39--41 kH/s corresponds to approximately
+5,850--6,150 CPU cycles per nonce. In contrast, 140--150 kH/s would allow only
+1,600--1,714 cycles for roughly 121 SHA rounds plus schedule work and is not
+supported by this implementation's generated code.
+
+The best current source-based estimate is therefore 35--45 kH/s for the
+software worker. If both workers were continuously active during the measured
+340--350 kH/s run, residual attribution suggests approximately 295--315 kH/s
+for the production hardware worker. That latter number is an inference, not an
+independent measurement. The different 4,096/16,384 batch sizes allocate work;
+they do not establish a 1:4 throughput ratio.
+
 ## Classic ESP32 hardware-pipeline experiment
 
 The legacy worker exposes all 40 SHA text-register writes around three hardware
@@ -59,23 +87,29 @@ second compression, and eight next-header writes with the third compression.
 Only the remaining eight next-header writes are necessarily exposed after the
 digest read.
 
-The first nonce and every subsequent 4096th nonce in each range is recomputed
-with the independent reference SHA-256d implementation. Every exact early-
-filter hit is also recomputed before it can become a candidate. A mismatch
-disables the experimental path for the rest of the boot and causes the entire
-range to be recomputed by the retained sequential hardware implementation;
-discarded experimental work is not added to the hashrate counters.
+ESP-IDF 4.4.6 explicitly says `SHA_TEXT_BASE` is shared and all SHA engines must
+be idle before that memory is modified. START, CONTINUE and LOAD are simple
+control-register writes; neither the HAL nor the ESP32 technical reference
+manual documents an input-latched state in which SHA_TEXT may be overwritten
+while BUSY is asserted. The perf.5 overlap therefore cannot exclude a silent
+false rejection and is disabled by default in perf.6.
 
-This scheduling relies on the classic ESP32 peripheral latching its text input
-when START/CONTINUE is issued. The installed ESP-IDF exposes no supported API
-for restoring SHA midstate, and host tests cannot prove the peripheral timing.
-The path is therefore a local experimental candidate and requires real-board
-correctness, throughput, Wi-Fi, TLS and watchdog validation before release.
+The old path remains available only behind the explicit development macro
+`NERDMINER_EXPERIMENTAL_SHA_TEXT_OVERLAP=1`. Sampling or probation can detect
+observed mismatches but cannot prove that a rare valid share was not turned into
+a rejection. It is not suitable as a public-release default.
+
+The selected path modifies SHA_TEXT only after BUSY clears. It safely overlaps
+the CPU-only nonce byte swap with the first compression and also waits for the
+final LOAD operation to become idle before reading the digest. Larger staging
+buffers do not hide the dominant MMIO writes because those writes still cannot
+begin until idle. An exact independent computation of the final filter word
+requires essentially the full SHA-256 state and is not a cheap per-nonce guard.
 
 ## Architecture experiment policy
 
 Worker affinity, two-software-worker mode and hardware-midstate restoration are
 not selected based on static estimates. Two current software workers cannot
-plausibly replace the approximately 300 kH/s hardware contribution, and classic
+plausibly replace the inferred approximately 295--315 kH/s hardware contribution, and classic
 ESP32 has no supported SHA-state restore operation. Affinity and priority remain
 unchanged until measured on hardware.

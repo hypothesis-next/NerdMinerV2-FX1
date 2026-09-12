@@ -37,6 +37,13 @@
 #include <hal/sha_ll.h>
 
 #if defined(CONFIG_IDF_TARGET_ESP32)
+
+// Writing SHA_TEXT while the classic ESP32 SHA engine is busy is outside the
+// documented peripheral contract. Keep the experiment available for explicit
+// development builds, but never enable it in a normal release build.
+#ifndef NERDMINER_EXPERIMENTAL_SHA_TEXT_OVERLAP
+#define NERDMINER_EXPERIMENTAL_SHA_TEXT_OVERLAP 0
+#endif
 #include <sha/sha_parallel_engine.h>
 #endif
 
@@ -1043,6 +1050,7 @@ static inline void nerd_sha_ll_fill_text_block_sha256(const void *input_text)
     reg_addr_buf[15] = data_words[15];
 }
 
+#if NERDMINER_EXPERIMENTAL_SHA_TEXT_OVERLAP
 static inline void nerd_sha_ll_fill_text_block_sha256_lower_half(const void *input_text)
 {
     const uint32_t *data_words = (const uint32_t *)input_text;
@@ -1072,9 +1080,10 @@ static inline void nerd_sha_ll_fill_text_block_sha256_upper_half(const void *inp
     reg_addr_buf[14] = data_words[14];
     reg_addr_buf[15] = data_words[15];
 }
+#endif
 
 static inline __attribute__((always_inline))
-void nerd_sha_ll_fill_text_block_sha256_upper(const void *input_text, uint32_t nonce)
+void nerd_sha_ll_fill_text_block_sha256_upper(const void *input_text, uint32_t nonce_be)
 {
     uint32_t *data_words = (uint32_t *)input_text;
     uint32_t *reg_addr_buf = (uint32_t *)(SHA_TEXT_BASE);
@@ -1082,7 +1091,7 @@ void nerd_sha_ll_fill_text_block_sha256_upper(const void *input_text, uint32_t n
     reg_addr_buf[0]  = data_words[0];
     reg_addr_buf[1]  = data_words[1];
     reg_addr_buf[2]  = data_words[2];
-    reg_addr_buf[3]  = __builtin_bswap32(nonce);
+    reg_addr_buf[3]  = nonce_be;
 #if 1
     reg_addr_buf[4]  = 0x80000000;
     reg_addr_buf[5]  = 0x00000000;
@@ -1139,14 +1148,14 @@ static inline __attribute__((always_inline)) void nerd_sha_ll_fill_text_block_sh
 
 namespace {
 
-// The classic ESP32 SHA engine cannot restore an arbitrary midstate.  This
-// path instead overlaps preparation of the next text block with the current
-// compression.  The sequential implementation remains available as a
-// permanent runtime fallback because this overlap depends on the peripheral
-// latching its input when START/CONTINUE is issued.
+// The classic ESP32 SHA engine cannot restore an arbitrary midstate. The
+// experimental path below depends on undocumented SHA_TEXT latching and is
+// compiled only for explicit development builds.
+#if NERDMINER_EXPERIMENTAL_SHA_TEXT_OVERLAP
 constexpr uint32_t kHardwarePipelineVerifyInterval = 4096;
 static std::atomic<bool> s_hardware_pipeline_enabled(true);
 static std::atomic<uint32_t> s_hardware_pipeline_errors(0);
+#endif
 
 static void recordHardwareCandidate(JobResult *result, const JobRequest *job,
                                     uint32_t nonce, const uint8_t hash[32])
@@ -1162,6 +1171,7 @@ static void recordHardwareCandidate(JobResult *result, const JobRequest *job,
   }
 }
 
+#if NERDMINER_EXPERIMENTAL_SHA_TEXT_OVERLAP
 __attribute__((noinline))
 static bool validateHardwareHash(const JobRequest *job, uint32_t nonce,
                                  const uint8_t hardware_hash[32])
@@ -1173,6 +1183,7 @@ static bool validateHardwareHash(const JobRequest *job, uint32_t nonce,
   mining_validation::referenceSha256d(header, sizeof(header), reference_hash);
   return memcmp(reference_hash, hardware_hash, sizeof(reference_hash)) == 0;
 }
+#endif
 
 static void runClassicHardwareSequential(const JobRequest *job,
                                          JobResult *result,
@@ -1186,8 +1197,12 @@ static void runClassicHardwareSequential(const JobRequest *job,
     nerd_sha_ll_fill_text_block_sha256(sha_buffer);
     sha_ll_start_block(SHA2_256);
 
+    // This CPU-only conversion is safe to overlap with the first compression;
+    // SHA_TEXT is not touched until the engine is confirmed idle.
+    const uint32_t nonce_be = __builtin_bswap32(nonce);
+
     nerd_sha_hal_wait_idle();
-    nerd_sha_ll_fill_text_block_sha256_upper(sha_buffer + 64, nonce);
+    nerd_sha_ll_fill_text_block_sha256_upper(sha_buffer + 64, nonce_be);
     sha_ll_continue_block(SHA2_256);
 
     nerd_sha_hal_wait_idle();
@@ -1198,6 +1213,7 @@ static void runClassicHardwareSequential(const JobRequest *job,
 
     nerd_sha_hal_wait_idle();
     sha_ll_load(SHA2_256);
+    nerd_sha_hal_wait_idle();
     if (nerd_sha_ll_read_digest_swap_if(hash))
       recordHardwareCandidate(result, job, nonce, hash);
 
@@ -1210,6 +1226,7 @@ static void runClassicHardwareSequential(const JobRequest *job,
   }
 }
 
+#if NERDMINER_EXPERIMENTAL_SHA_TEXT_OVERLAP
 // Returns false if the ESP32 peripheral did not preserve byte-exact SHA-256d
 // semantics while text-register writes were overlapped with compression.
 // The caller then discards all results from this attempt and recomputes the
@@ -1230,7 +1247,8 @@ runClassicHardwarePipelined(const JobRequest *job,
     // The first compression consumes the already prepared first block while
     // the CPU prepares the second block in the shared text window.
     sha_ll_start_block(SHA2_256);
-    nerd_sha_ll_fill_text_block_sha256_upper(sha_buffer + 64, nonce);
+    nerd_sha_ll_fill_text_block_sha256_upper(
+        sha_buffer + 64, __builtin_bswap32(nonce));
     nerd_sha_hal_wait_idle();
 
     // CONTINUE latches the second block.  Its upper half can then be replaced
@@ -1248,6 +1266,7 @@ runClassicHardwarePipelined(const JobRequest *job,
     nerd_sha_ll_fill_text_block_sha256_upper_half(sha_buffer);
     nerd_sha_hal_wait_idle();
     sha_ll_load(SHA2_256);
+    nerd_sha_hal_wait_idle();
 
     const bool sample = (offset & (kHardwarePipelineVerifyInterval - 1U)) == 0;
     const bool passes_early_filter = nerd_sha_ll_read_digest_swap(hash, sample);
@@ -1274,6 +1293,7 @@ runClassicHardwarePipelined(const JobRequest *job,
   }
   return true;
 }
+#endif
 
 }  // namespace
 
@@ -1313,6 +1333,7 @@ void minerWorkerHw(void * task_id)
       memcpy(sha_buffer, job->sha_buffer, 80);
 
       esp_sha_lock_engine(SHA2_256);
+#if NERDMINER_EXPERIMENTAL_SHA_TEXT_OVERLAP
       if (s_hardware_pipeline_enabled.load(std::memory_order_acquire))
       {
         if (!runClassicHardwarePipelined(job.get(), result.get(), sha_buffer, hash))
@@ -1332,6 +1353,9 @@ void minerWorkerHw(void * task_id)
       }
       else
         runClassicHardwareSequential(job.get(), result.get(), sha_buffer, hash);
+#else
+      runClassicHardwareSequential(job.get(), result.get(), sha_buffer, hash);
+#endif
       esp_sha_unlock_engine(SHA2_256);
     } else
       vTaskDelay(2 / portTICK_PERIOD_MS);

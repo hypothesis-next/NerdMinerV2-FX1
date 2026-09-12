@@ -1,4 +1,4 @@
-# V1.8.3-multipool-perf.5 local performance-candidate notes
+# V1.8.3-multipool-perf.6 local performance-candidate notes
 
 This is an unofficial NerdMiner_v2 performance and correctness test build. It
 is not an official or endorsed release of NerdMiner, BitMaker-hub, HeliosPool,
@@ -40,11 +40,20 @@ including 73 exact early-filter passes. SHA-256d vectors include the Bitcoin
 genesis header and historical headers at heights 1, 100000, and 700000. This is
 a correctness result, not a physical ESP32 hashrate measurement.
 
-On classic ESP32, the hardware worker now experimentally overlaps SHA text-
-register preparation with active compression. The original sequential worker
-remains as a runtime fallback. The first and every 4096th nonce in a range, plus
-every exact early-filter hit, are independently recomputed. A mismatch disables
-the pipeline and causes the complete range to be recomputed before it is counted.
+The perf.5 classic-ESP32 SHA text-register overlap is disabled by default. The
+installed ESP-IDF explicitly requires all SHA engines to be idle before
+SHA_TEXT is modified, and neither its HAL nor the hardware manual provides a
+safe input-latched point during BUSY. Sampled validation could not rule out a
+rare false-negative filter result. Perf.6 therefore uses the documented
+sequential path, overlaps only the CPU-local nonce byte swap, and waits for the
+final LOAD operation before reading the digest. The old experiment remains
+available only through an explicit development-build macro.
+
+The only physical baseline is 340--350 kH/s combined. Source comments and
+target disassembly support approximately 35--45 kH/s for the software worker.
+Residual attribution suggests approximately 295--315 kH/s for the production
+hardware worker, but the firmware has no per-worker physical counters, so that
+split remains an estimate rather than a measurement.
 
 Per-function `-O2` and `-O3` variants were rejected because they increased IRAM,
 stack frames and spills. Fixed affinity, two-software-worker, unsupported
