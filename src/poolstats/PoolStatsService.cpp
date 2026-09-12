@@ -13,8 +13,7 @@ namespace {
 
 constexpr uint32_t WIFI_RECHECK_MS = 5UL * 1000UL;
 constexpr uint32_t CLOCK_RECHECK_MS = 5UL * 1000UL;
-constexpr time_t MIN_VALID_TLS_TIME = 1704067200;  // 2024-01-01 UTC
-constexpr const char *NTP_SERVER = "europe.pool.ntp.org";
+constexpr const char *NTP_SERVER = "pool.ntp.org";
 constexpr uint32_t MIN_FREE_HEAP = 45000;
 constexpr uint32_t MIN_LARGEST_HEAP_BLOCK = 24000;
 // TLS setup in WiFiClientSecure exceeds 10 KiB on classic ESP32. Keep the
@@ -48,10 +47,6 @@ bool timeReached(uint32_t now, uint32_t target) {
 
 bool needsTlsClock() {
   return strncmp(identity.definition.apiBaseUrl, "https://", 8) == 0;
-}
-
-bool tlsClockReady() {
-  return time(nullptr) >= MIN_VALID_TLS_TIME;
 }
 
 void publishSnapshot(PoolStatsSnapshot value) {
@@ -102,8 +97,10 @@ void poolStatsTask(void *) {
       }
       nextAttemptMs = now + WIFI_RECHECK_MS;
     } else if (timeReached(now, nextAttemptMs)) {
-      if (needsTlsClock() && !tlsClockReady()) {
-        if (!timeSyncStarted) {
+      const PoolClockAction clockAction = poolStatsClockAction(
+          needsTlsClock(), static_cast<int64_t>(time(nullptr)), timeSyncStarted);
+      if (clockAction != PoolClockAction::Fetch) {
+        if (clockAction == PoolClockAction::StartSync) {
           configTime(0, 0, NTP_SERVER);
           timeSyncStarted = true;
         }

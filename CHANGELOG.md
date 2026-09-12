@@ -1,5 +1,30 @@
 # Changelog
 
+## V1.8.3-multipool-perf.4 - local release candidate
+
+### Changed
+
+- Added the official self-signed GTS Root R4 certificate as a dedicated,
+  provider-specific HeliosPool HTTPS trust anchor.
+- Kept the generic Mozilla CA bundle for Public Pool and compatible providers.
+- Changed the statistics-task SNTP server from `europe.pool.ntp.org` to the
+  geographically distributed `pool.ntp.org` service.
+- Made the pre-TLS UTC clock gate deterministic and host-testable.
+
+### Validation status
+
+- The committed PEM exactly matches the official `https://pki.goog/roots.pem`
+  GTS Root R4 entry and passed subject, issuer, self-signature, CA constraint,
+  validity, fingerprint, and checksum verification.
+- A desktop TLS client using only this root validated
+  `stats-btc.heliospool.com`; an incorrect hostname was rejected. The live
+  snapshot route returned its expected missing-address HTTP 400 response.
+- Native PoolStats tests and the five-million-case mining/SHA regression suite
+  pass. The clean `ESP32_2432S028_2USB` build uses 55,700 bytes of static RAM
+  and 2,144,321 bytes of application flash according to PlatformIO.
+- ESP32 TLS, SNTP, display, memory, watchdog, and recovery behavior require a
+  later combined physical-hardware validation cycle.
+
 ## V1.8.3-multipool-perf.3 - 2026-09-11
 
 Follow-up hotfix for verified HTTPS pool statistics on physical hardware.

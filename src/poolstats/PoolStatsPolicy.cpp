@@ -30,6 +30,14 @@ PoolFetchResult classifyPoolHttpStatus(int status) {
   }
 }
 
+PoolClockAction poolStatsClockAction(bool requiresTls, int64_t epoch,
+                                     bool syncStarted) {
+  if (!requiresTls || epoch >= POOL_STATS_MIN_VALID_TLS_EPOCH) {
+    return PoolClockAction::Fetch;
+  }
+  return syncStarted ? PoolClockAction::Wait : PoolClockAction::StartSync;
+}
+
 uint32_t poolStatsFailureBackoffMs(uint8_t failures, int16_t httpStatus) {
   if (httpStatus == 429) return FAILURE_BACKOFF_MAX_MS;
 

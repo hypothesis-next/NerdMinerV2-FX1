@@ -160,6 +160,19 @@ void testParsers(const std::string &fixtures) {
 }
 
 void testPolicy() {
+  check(poolStatsClockAction(false, 0, false) == PoolClockAction::Fetch,
+        "non-TLS provider does not require system time");
+  check(poolStatsClockAction(true, 0, false) == PoolClockAction::StartSync,
+        "invalid TLS clock starts synchronization");
+  check(poolStatsClockAction(true, 0, true) == PoolClockAction::Wait,
+        "invalid TLS clock waits after synchronization starts");
+  check(poolStatsClockAction(true, POOL_STATS_MIN_VALID_TLS_EPOCH - 1, true) ==
+            PoolClockAction::Wait,
+        "TLS clock rejects the lower-bound predecessor");
+  check(poolStatsClockAction(true, POOL_STATS_MIN_VALID_TLS_EPOCH, true) ==
+            PoolClockAction::Fetch,
+        "TLS clock transition permits fetch at valid UTC time");
+
   check(classifyPoolHttpStatus(200).status == PoolFetchStatus::Success,
         "HTTP 200 classification");
   check(classifyPoolHttpStatus(304).status == PoolFetchStatus::NotModified,

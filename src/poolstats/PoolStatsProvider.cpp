@@ -8,6 +8,7 @@
 
 #include "PoolStatsParsers.h"
 #include "PoolStatsPolicy.h"
+#include "../version.h"
 
 namespace {
 
@@ -15,10 +16,22 @@ constexpr uint32_t CONNECT_TIMEOUT_MS = 4000;
 constexpr uint16_t READ_TIMEOUT_MS = 5000;
 constexpr uint32_t TLS_HANDSHAKE_TIMEOUT_SECONDS = 5;
 constexpr int MAX_RESPONSE_BYTES = 16384;
-constexpr char USER_AGENT[] = "NerdMinerV2-MultiPool/V1.8.3-multipool.1";
+constexpr char USER_AGENT[] = "NerdMinerV2-MultiPool/" CURRENT_VERSION;
 
 extern const uint8_t rootca_crt_bundle_start[]
     asm("_binary_data_cert_x509_crt_bundle_bin_start");
+extern const char gts_root_r4_pem_start[]
+    asm("_binary_data_cert_gts_root_r4_pem_start");
+
+enum class PoolResponseFormat : uint8_t {
+  PublicPool,
+  Helios
+};
+
+enum class TlsTrust : uint8_t {
+  GenericBundle,
+  GtsRootR4
+};
 
 class LimitedStream : public Stream {
  public:
@@ -116,7 +129,9 @@ PoolFetchResult parseHeliosResponse(HTTPClient &http,
 }
 
 PoolFetchResult executeRequest(const PoolIdentity &identity,
-                               PoolStatsSnapshot &snapshot, bool helios,
+                               PoolStatsSnapshot &snapshot,
+                               PoolResponseFormat responseFormat,
+                               TlsTrust tlsTrust,
                                char *lastModified,
                                size_t lastModifiedSize) {
   if (!safeWallet(identity.wallet)) {
@@ -146,7 +161,11 @@ PoolFetchResult executeRequest(const PoolIdentity &identity,
   const bool secure = strncmp(url, "https://", 8) == 0;
   bool began = false;
   if (secure) {
-    secureClient.setCACertBundle(rootca_crt_bundle_start);
+    if (tlsTrust == TlsTrust::GtsRootR4) {
+      secureClient.setCACert(gts_root_r4_pem_start);
+    } else {
+      secureClient.setCACertBundle(rootca_crt_bundle_start);
+    }
     secureClient.setHandshakeTimeout(TLS_HANDSHAKE_TIMEOUT_SECONDS);
     secureClient.setTimeout(READ_TIMEOUT_MS / 1000);
     began = http.begin(secureClient, url);
@@ -158,6 +177,7 @@ PoolFetchResult executeRequest(const PoolIdentity &identity,
     return {PoolFetchStatus::RetryableError, 0};
   }
 
+  const bool helios = responseFormat == PoolResponseFormat::Helios;
   if (helios && lastModified != nullptr && lastModified[0] != '\0') {
     http.addHeader("If-Modified-Since", lastModified);
   }
@@ -195,7 +215,8 @@ class PublicPoolCompatibleProvider final : public PoolStatsProvider {
  public:
   PoolFetchResult fetch(const PoolIdentity &identity,
                         PoolStatsSnapshot &snapshot, char *, size_t) override {
-    return executeRequest(identity, snapshot, false, nullptr, 0);
+    return executeRequest(identity, snapshot, PoolResponseFormat::PublicPool,
+                          TlsTrust::GenericBundle, nullptr, 0);
   }
 };
 
@@ -204,8 +225,8 @@ class HeliosPoolProvider final : public PoolStatsProvider {
   PoolFetchResult fetch(const PoolIdentity &identity,
                         PoolStatsSnapshot &snapshot, char *lastModified,
                         size_t lastModifiedSize) override {
-    return executeRequest(identity, snapshot, true, lastModified,
-                          lastModifiedSize);
+    return executeRequest(identity, snapshot, PoolResponseFormat::Helios,
+                          TlsTrust::GtsRootR4, lastModified, lastModifiedSize);
   }
 };
 
