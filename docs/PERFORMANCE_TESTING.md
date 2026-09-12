@@ -1,6 +1,6 @@
 # Performance-test methodology
 
-V1.8.3-multipool-perf.4 is an unofficial local release candidate. It does
+V1.8.3-multipool-perf.5 is an unofficial local release candidate. It does
 not claim that one megahash per second has been achieved.
 
 ## What is validated on the host
@@ -20,6 +20,9 @@ not claim that one megahash per second has been achieved.
 The normal deterministic run uses five million randomized 80-byte headers.
 Host throughput is useful only for comparing host compiler variants; it is not
 an estimate of ESP32 throughput.
+
+`tools/run_native_tests.ps1` compiles both native suites from the current
+source, so the mining result cannot come from a previously built executable.
 
 ## What must be measured on ESP32_2432S028_2USB
 
@@ -42,9 +45,37 @@ frame. Isolated `-O2` and `-O3` generated the same 20,110-byte routine with a
 160-byte frame. With no physical timing evidence to justify the increased IRAM
 and stack pressure, the release retains `-Os`.
 
+The new classic-ESP32 hardware pipeline was also compiled in isolation. Its
+`-Os` hot routine is 642 bytes with a 48-byte frame. Per-function `-O2` grew it
+to 781 bytes/64 bytes, and `-O3` to 897 bytes/96 bytes, with more spills. The
+candidate therefore retains `-Os` for this routine as well.
+
+## Classic ESP32 hardware-pipeline experiment
+
+The legacy worker exposes all 40 SHA text-register writes around three hardware
+compressions for every nonce. The experimental path overlaps 16 second-block
+writes with the first compression, eight double-SHA padding writes with the
+second compression, and eight next-header writes with the third compression.
+Only the remaining eight next-header writes are necessarily exposed after the
+digest read.
+
+The first nonce and every subsequent 4096th nonce in each range is recomputed
+with the independent reference SHA-256d implementation. Every exact early-
+filter hit is also recomputed before it can become a candidate. A mismatch
+disables the experimental path for the rest of the boot and causes the entire
+range to be recomputed by the retained sequential hardware implementation;
+discarded experimental work is not added to the hashrate counters.
+
+This scheduling relies on the classic ESP32 peripheral latching its text input
+when START/CONTINUE is issued. The installed ESP-IDF exposes no supported API
+for restoring SHA midstate, and host tests cannot prove the peripheral timing.
+The path is therefore a local experimental candidate and requires real-board
+correctness, throughput, Wi-Fi, TLS and watchdog validation before release.
+
 ## Architecture experiment policy
 
-Worker affinity, two-software-worker mode, hardware-midstate restoration and
-other SHA-peripheral changes are not selected based on static estimates. Each
-must beat the hybrid baseline on physical hardware while producing identical
-reference-validated work and preserving Wi-Fi, display and watchdog stability.
+Worker affinity, two-software-worker mode and hardware-midstate restoration are
+not selected based on static estimates. Two current software workers cannot
+plausibly replace the approximately 300 kH/s hardware contribution, and classic
+ESP32 has no supported SHA-state restore operation. Affinity and priority remain
+unchanged until measured on hardware.

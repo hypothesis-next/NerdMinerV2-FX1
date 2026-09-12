@@ -1,5 +1,35 @@
 # Changelog
 
+## V1.8.3-multipool-perf.5 - local performance candidate
+
+### Changed
+
+- Added a classic-ESP32 hardware-SHA register-fill pipeline that overlaps text
+  preparation with the three required compression operations per nonce.
+- Moved the compact hardware hot loop to IRAM and retained `-Os` after isolated
+  `-O2`/`-O3` variants increased code size, stack, and spills.
+- Reduced the normal exact-filter digest read to the framework's SMP-safe
+  single-register path; full digest reads remain rare.
+- Extended the native test runner so a fresh invocation compiles and executes
+  both the PoolStats suite and the five-million-case mining validation suite.
+
+### Correctness guard
+
+- The original sequential hardware miner remains compiled as a permanent
+  fallback. The first nonce and every 4096th nonce are independently recomputed,
+  as is every early-filter hit. A mismatch disables the pipeline and recomputes
+  the complete range sequentially before any work is counted.
+- Candidate snapshots, full-width generation checks, exact target comparison,
+  Stratum submission, wallet behavior and the visible UI are unchanged.
+
+### Validation status
+
+- Five million optimized-vs-reference software SHA-256d cases pass with zero
+  mismatches; target, historical header, forced-candidate, stale-generation and
+  nonce-range tests also pass.
+- The target firmware builds for `ESP32_2432S028_2USB`. The new peripheral
+  schedule and its physical hashrate remain **REQUIRES REAL HARDWARE**.
+
 ## V1.8.3-multipool-perf.4 - local release candidate
 
 ### Changed

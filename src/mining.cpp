@@ -969,15 +969,19 @@ void minerWorkerHw(void * task_id)
 
 #if defined(CONFIG_IDF_TARGET_ESP32)
 
-static inline bool nerd_sha_ll_read_digest_swap_if(void* ptr)
+static inline __attribute__((always_inline))
+bool nerd_sha_ll_read_digest_swap(void* ptr, bool force_read)
 {
-  DPORT_INTERRUPT_DISABLE();
-  uint32_t fin = DPORT_SEQUENCE_REG_READ(SHA_TEXT_BASE + 7 * 4);
-  if ( (uint32_t)(fin & 0xFFFF) != 0)
-  {
-    DPORT_INTERRUPT_RESTORE();
+  // Most nonces need only the final word for the exact 16-bit early filter.
+  // DPORT_REG_READ is the framework's SMP-safe path for a single register.
+  const uint32_t fin = DPORT_REG_READ(SHA_TEXT_BASE + 7 * 4);
+  const bool passes_early_filter = (uint32_t)(fin & 0xFFFF) == 0;
+  if (!passes_early_filter && !force_read)
     return false;
-  }
+
+  // Samples and filter hits are rare; use the faster sequential-read helper
+  // for the remaining digest words while interrupts are locally disabled.
+  DPORT_INTERRUPT_DISABLE();
   ((uint32_t*)ptr)[7] = __builtin_bswap32(fin);
   ((uint32_t*)ptr)[0] = __builtin_bswap32(DPORT_SEQUENCE_REG_READ(SHA_TEXT_BASE + 0 * 4));
   ((uint32_t*)ptr)[1] = __builtin_bswap32(DPORT_SEQUENCE_REG_READ(SHA_TEXT_BASE + 1 * 4));
@@ -987,7 +991,13 @@ static inline bool nerd_sha_ll_read_digest_swap_if(void* ptr)
   ((uint32_t*)ptr)[5] = __builtin_bswap32(DPORT_SEQUENCE_REG_READ(SHA_TEXT_BASE + 5 * 4));
   ((uint32_t*)ptr)[6] = __builtin_bswap32(DPORT_SEQUENCE_REG_READ(SHA_TEXT_BASE + 6 * 4));
   DPORT_INTERRUPT_RESTORE();
-  return true;
+  return passes_early_filter;
+}
+
+static inline __attribute__((always_inline))
+bool nerd_sha_ll_read_digest_swap_if(void* ptr)
+{
+  return nerd_sha_ll_read_digest_swap(ptr, false);
 }
 
 static inline void nerd_sha_ll_read_digest(void* ptr)
@@ -1004,7 +1014,7 @@ static inline void nerd_sha_ll_read_digest(void* ptr)
   DPORT_INTERRUPT_RESTORE();
 }
 
-static inline void nerd_sha_hal_wait_idle()
+static inline __attribute__((always_inline)) void nerd_sha_hal_wait_idle()
 {
     while (DPORT_REG_READ(SHA_256_BUSY_REG))
     {}
@@ -1033,7 +1043,38 @@ static inline void nerd_sha_ll_fill_text_block_sha256(const void *input_text)
     reg_addr_buf[15] = data_words[15];
 }
 
-static inline void nerd_sha_ll_fill_text_block_sha256_upper(const void *input_text, uint32_t nonce)
+static inline void nerd_sha_ll_fill_text_block_sha256_lower_half(const void *input_text)
+{
+    const uint32_t *data_words = (const uint32_t *)input_text;
+    uint32_t *reg_addr_buf = (uint32_t *)(SHA_TEXT_BASE);
+
+    reg_addr_buf[0] = data_words[0];
+    reg_addr_buf[1] = data_words[1];
+    reg_addr_buf[2] = data_words[2];
+    reg_addr_buf[3] = data_words[3];
+    reg_addr_buf[4] = data_words[4];
+    reg_addr_buf[5] = data_words[5];
+    reg_addr_buf[6] = data_words[6];
+    reg_addr_buf[7] = data_words[7];
+}
+
+static inline void nerd_sha_ll_fill_text_block_sha256_upper_half(const void *input_text)
+{
+    const uint32_t *data_words = (const uint32_t *)input_text;
+    uint32_t *reg_addr_buf = (uint32_t *)(SHA_TEXT_BASE);
+
+    reg_addr_buf[8]  = data_words[8];
+    reg_addr_buf[9]  = data_words[9];
+    reg_addr_buf[10] = data_words[10];
+    reg_addr_buf[11] = data_words[11];
+    reg_addr_buf[12] = data_words[12];
+    reg_addr_buf[13] = data_words[13];
+    reg_addr_buf[14] = data_words[14];
+    reg_addr_buf[15] = data_words[15];
+}
+
+static inline __attribute__((always_inline))
+void nerd_sha_ll_fill_text_block_sha256_upper(const void *input_text, uint32_t nonce)
 {
     uint32_t *data_words = (uint32_t *)input_text;
     uint32_t *reg_addr_buf = (uint32_t *)(SHA_TEXT_BASE);
@@ -1071,7 +1112,7 @@ static inline void nerd_sha_ll_fill_text_block_sha256_upper(const void *input_te
 #endif
 }
 
-static inline void nerd_sha_ll_fill_text_block_sha256_double()
+static inline __attribute__((always_inline)) void nerd_sha_ll_fill_text_block_sha256_double()
 {
     uint32_t *reg_addr_buf = (uint32_t *)(SHA_TEXT_BASE);
 
@@ -1095,6 +1136,146 @@ static inline void nerd_sha_ll_fill_text_block_sha256_double()
     reg_addr_buf[14] = 0x00000000;
     reg_addr_buf[15] = 0x00000100;
 }
+
+namespace {
+
+// The classic ESP32 SHA engine cannot restore an arbitrary midstate.  This
+// path instead overlaps preparation of the next text block with the current
+// compression.  The sequential implementation remains available as a
+// permanent runtime fallback because this overlap depends on the peripheral
+// latching its input when START/CONTINUE is issued.
+constexpr uint32_t kHardwarePipelineVerifyInterval = 4096;
+static std::atomic<bool> s_hardware_pipeline_enabled(true);
+static std::atomic<uint32_t> s_hardware_pipeline_errors(0);
+
+static void recordHardwareCandidate(JobResult *result, const JobRequest *job,
+                                    uint32_t nonce, const uint8_t hash[32])
+{
+  const double diff_hash = diff_from_target((void *)hash);
+  if (diff_hash > result->difficulty && isSha256Valid(hash))
+  {
+    result->difficulty = diff_hash;
+    result->nonce = nonce;
+    memcpy(result->hash, hash, sizeof(result->hash));
+    memcpy(result->raw_header, job->raw_header, sizeof(result->raw_header));
+    memcpy(result->raw_header + 76, &nonce, sizeof(nonce));
+  }
+}
+
+__attribute__((noinline))
+static bool validateHardwareHash(const JobRequest *job, uint32_t nonce,
+                                 const uint8_t hardware_hash[32])
+{
+  uint8_t header[80];
+  uint8_t reference_hash[32];
+  memcpy(header, job->raw_header, sizeof(header));
+  memcpy(header + 76, &nonce, sizeof(nonce));
+  mining_validation::referenceSha256d(header, sizeof(header), reference_hash);
+  return memcmp(reference_hash, hardware_hash, sizeof(reference_hash)) == 0;
+}
+
+static void runClassicHardwareSequential(const JobRequest *job,
+                                         JobResult *result,
+                                         uint8_t sha_buffer[128],
+                                         uint8_t hash[32])
+{
+  result->nonce_count = job->nonce_count;
+  for (uint32_t offset = 0; offset < job->nonce_count; ++offset)
+  {
+    const uint32_t nonce = job->nonce_start + offset;
+    nerd_sha_ll_fill_text_block_sha256(sha_buffer);
+    sha_ll_start_block(SHA2_256);
+
+    nerd_sha_hal_wait_idle();
+    nerd_sha_ll_fill_text_block_sha256_upper(sha_buffer + 64, nonce);
+    sha_ll_continue_block(SHA2_256);
+
+    nerd_sha_hal_wait_idle();
+    sha_ll_load(SHA2_256);
+    nerd_sha_hal_wait_idle();
+    nerd_sha_ll_fill_text_block_sha256_double();
+    sha_ll_start_block(SHA2_256);
+
+    nerd_sha_hal_wait_idle();
+    sha_ll_load(SHA2_256);
+    if (nerd_sha_ll_read_digest_swap_if(hash))
+      recordHardwareCandidate(result, job, nonce, hash);
+
+    if ((offset & 0xFFU) == 0 &&
+        s_working_generation.load(std::memory_order_acquire) != job->generation)
+    {
+      result->nonce_count = offset + 1;
+      break;
+    }
+  }
+}
+
+// Returns false if the ESP32 peripheral did not preserve byte-exact SHA-256d
+// semantics while text-register writes were overlapped with compression.
+// The caller then discards all results from this attempt and recomputes the
+// complete range with runClassicHardwareSequential().
+static bool IRAM_ATTR __attribute__((noinline))
+runClassicHardwarePipelined(const JobRequest *job,
+                            JobResult *result,
+                            uint8_t sha_buffer[128],
+                            uint8_t hash[32])
+{
+  result->nonce_count = job->nonce_count;
+  nerd_sha_ll_fill_text_block_sha256(sha_buffer);
+
+  for (uint32_t offset = 0; offset < job->nonce_count; ++offset)
+  {
+    const uint32_t nonce = job->nonce_start + offset;
+
+    // The first compression consumes the already prepared first block while
+    // the CPU prepares the second block in the shared text window.
+    sha_ll_start_block(SHA2_256);
+    nerd_sha_ll_fill_text_block_sha256_upper(sha_buffer + 64, nonce);
+    nerd_sha_hal_wait_idle();
+
+    // CONTINUE latches the second block.  Its upper half can then be replaced
+    // with the fixed padding for the second SHA while compression is active.
+    sha_ll_continue_block(SHA2_256);
+    nerd_sha_ll_fill_text_block_sha256_double();
+    nerd_sha_hal_wait_idle();
+    sha_ll_load(SHA2_256);
+    nerd_sha_hal_wait_idle();
+
+    // LOAD placed the first digest in words 0..7; words 8..15 already contain
+    // the 32-byte-message padding.  Prepare half of the next first block while
+    // the double-hash compression runs.
+    sha_ll_start_block(SHA2_256);
+    nerd_sha_ll_fill_text_block_sha256_upper_half(sha_buffer);
+    nerd_sha_hal_wait_idle();
+    sha_ll_load(SHA2_256);
+
+    const bool sample = (offset & (kHardwarePipelineVerifyInterval - 1U)) == 0;
+    const bool passes_early_filter = nerd_sha_ll_read_digest_swap(hash, sample);
+
+    // Complete preparation of the next first block only after copying any
+    // digest that is needed for a sample or candidate.
+    nerd_sha_ll_fill_text_block_sha256_lower_half(sha_buffer);
+
+    if (sample || passes_early_filter)
+    {
+      if (!validateHardwareHash(job, nonce, hash))
+        return false;
+    }
+
+    if (passes_early_filter)
+      recordHardwareCandidate(result, job, nonce, hash);
+
+    if ((offset & 0xFFU) == 0 &&
+        s_working_generation.load(std::memory_order_acquire) != job->generation)
+    {
+      result->nonce_count = offset + 1;
+      break;
+    }
+  }
+  return true;
+}
+
+}  // namespace
 
 void minerWorkerHw(void * task_id)
 {
@@ -1128,59 +1309,29 @@ void minerWorkerHw(void * task_id)
       result = std::make_shared<JobResult>();
       result->generation = job->generation;
       result->nonce = 0xFFFFFFFF;
-      result->nonce_count = job->nonce_count;
       result->difficulty = job->difficulty;
       memcpy(sha_buffer, job->sha_buffer, 80);
 
       esp_sha_lock_engine(SHA2_256);
-      for (uint32_t n = 0; n < job->nonce_count; ++n)
+      if (s_hardware_pipeline_enabled.load(std::memory_order_acquire))
       {
-        //((uint32_t*)(sha_buffer+64+12))[0] = __builtin_bswap32(job->nonce_start+n);
-
-        //sha_hal_hash_block(SHA2_256, s_test_buffer, 64/4, true);
-        //nerd_sha_hal_wait_idle();
-        nerd_sha_ll_fill_text_block_sha256(sha_buffer);
-        sha_ll_start_block(SHA2_256);
-
-        //sha_hal_hash_block(SHA2_256, s_test_buffer+64, 64/4, false);
-        nerd_sha_hal_wait_idle();
-        nerd_sha_ll_fill_text_block_sha256_upper(sha_buffer+64, job->nonce_start+n);
-        sha_ll_continue_block(SHA2_256);
-
-        nerd_sha_hal_wait_idle();
-        sha_ll_load(SHA2_256);
-
-        //sha_hal_hash_block(SHA2_256, interResult, 64/4, true);
-        nerd_sha_hal_wait_idle();
-        nerd_sha_ll_fill_text_block_sha256_double();
-        sha_ll_start_block(SHA2_256);
-
-        nerd_sha_hal_wait_idle();
-        sha_ll_load(SHA2_256);
-        if (nerd_sha_ll_read_digest_swap_if(hash))
+        if (!runClassicHardwarePipelined(job.get(), result.get(), sha_buffer, hash))
         {
-          //~5 per second
-          double diff_hash = diff_from_target(hash);
-          if (diff_hash > result->difficulty)
-          {
-            if (isSha256Valid(hash))
-            {
-              result->difficulty = diff_hash;
-              result->nonce = job->nonce_start+n;
-              memcpy(result->hash, hash, sizeof(hash));
-              memcpy(result->raw_header, job->raw_header, sizeof(result->raw_header));
-              memcpy(result->raw_header + 76, &result->nonce, sizeof(result->nonce));
-            }
-          }
-        }
-        if (
-             (uint8_t)(n & 0xFF) == 0 &&
-             s_working_generation.load(std::memory_order_acquire) != job->generation)
-        {
-          result->nonce_count = n+1;
-          break;
+          const uint32_t errors =
+              s_hardware_pipeline_errors.fetch_add(1, std::memory_order_relaxed) + 1;
+          s_hardware_pipeline_enabled.store(false, std::memory_order_release);
+          Serial.printf("CRITICAL: ESP32 SHA pipeline validation failed; disabling pipeline (errors=%u)\n",
+                        errors);
+
+          result->nonce = 0xFFFFFFFF;
+          result->difficulty = job->difficulty;
+          memset(result->hash, 0, sizeof(result->hash));
+          memset(result->raw_header, 0, sizeof(result->raw_header));
+          runClassicHardwareSequential(job.get(), result.get(), sha_buffer, hash);
         }
       }
+      else
+        runClassicHardwareSequential(job.get(), result.get(), sha_buffer, hash);
       esp_sha_unlock_engine(SHA2_256);
     } else
       vTaskDelay(2 / portTICK_PERIOD_MS);

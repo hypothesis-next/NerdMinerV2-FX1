@@ -47,3 +47,24 @@ try {
 finally {
     Pop-Location
 }
+
+$miningExecutable = "test\.build\native_mining_validation.exe"
+$miningSources = "test\native_mining_validation.cpp " +
+    "src\crypto\ReferenceSha256.cpp src\ShaTests\nerdSHA256plus.cpp"
+$nativeArduinoStub = Join-Path $projectDirectory "test\native_stubs\Arduino.h"
+$miningCommand = "`"$developerShell`" -arch=amd64 -host_arch=amd64 >nul && " +
+    "cl.exe /nologo /EHsc /std:c++17 /O2 /W4 /D_CRT_SECURE_NO_WARNINGS " +
+    "/FI`"$nativeArduinoStub`" /I test\native_stubs /I src " +
+    "$miningSources /Fo:test\.build\ /Fe:$miningExecutable && " +
+    "$miningExecutable 5000000"
+
+Push-Location $projectDirectory
+try {
+    & cmd.exe /d /s /c $miningCommand
+    if ($LASTEXITCODE -ne 0) {
+        throw "Native mining validation tests failed with exit code $LASTEXITCODE."
+    }
+}
+finally {
+    Pop-Location
+}

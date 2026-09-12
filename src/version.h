@@ -1,6 +1,6 @@
 #ifndef VERSION_H
 #define VERSION_H
 
-#define CURRENT_VERSION "V1.8.3-multipool-perf.4"
+#define CURRENT_VERSION "V1.8.3-multipool-perf.5"
 
 #endif // VERSION_H

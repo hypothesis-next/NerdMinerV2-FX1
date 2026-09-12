@@ -1,12 +1,12 @@
-# V1.8.3-multipool-perf.4 local release-candidate notes
+# V1.8.3-multipool-perf.5 local performance-candidate notes
 
 This is an unofficial NerdMiner_v2 performance and correctness test build. It
 is not an official or endorsed release of NerdMiner, BitMaker-hub, HeliosPool,
 or another pool operator.
 
-This is a locally validated release candidate. It has not yet been flashed or
-validated on physical ESP32 hardware. It accumulates the earlier correctness
-and PoolStats stack fixes with a Helios-specific TLS trust-anchor correction.
+This is a locally validated performance candidate. It has not yet been flashed
+or validated on physical ESP32 hardware. It accumulates the earlier correctness,
+PoolStats stack, and Helios-specific TLS trust-anchor corrections.
 
 HeliosPool HTTPS uses the official self-signed GTS Root R4 certificate while
 Public Pool and compatible providers retain the general Mozilla CA bundle.
@@ -20,7 +20,7 @@ after physical classic-ESP32 testing demonstrated a stack-canary panic in the
 mbedTLS entropy/TLS connection path. It also synchronizes the ESP32 system clock
 before verified HTTPS statistics requests. Mining and UI behavior are unchanged.
 
-The release preserves the V1.8.3-multipool.1 UI and hybrid mining architecture.
+The release preserves the V1.8.3-multipool.1 UI and hybrid SW+HW architecture.
 It fixes exact block-target comparison, gives workers a full-width atomic job
 generation, snapshots the exact candidate header, corrects full 32-byte target
 endianness, and independently recomputes SHA-256d before every locally generated
@@ -40,10 +40,18 @@ including 73 exact early-filter passes. SHA-256d vectors include the Bitcoin
 genesis header and historical headers at heights 1, 100000, and 700000. This is
 a correctness result, not a physical ESP32 hashrate measurement.
 
-Speed-oriented compiler, fixed-affinity, two-software-worker and hardware
-midstate variants were not selected without physical timing proof. Consequently
-this release does not claim one megahash per second. Actual throughput and
-long-runtime stability require testing on ESP32_2432S028_2USB hardware.
+On classic ESP32, the hardware worker now experimentally overlaps SHA text-
+register preparation with active compression. The original sequential worker
+remains as a runtime fallback. The first and every 4096th nonce in a range, plus
+every exact early-filter hit, are independently recomputed. A mismatch disables
+the pipeline and causes the complete range to be recomputed before it is counted.
+
+Per-function `-O2` and `-O3` variants were rejected because they increased IRAM,
+stack frames and spills. Fixed affinity, two-software-worker, unsupported
+hardware-midstate restoration and hand-written assembly were not selected
+without physical evidence. This release does not claim 700, 800, or 1000 kH/s.
+Actual useful throughput and long-runtime stability require testing on
+ESP32_2432S028_2USB hardware.
 
 Use the factory image at offset `0x0000` for a clean development-device flash.
 Use the application image at `0x10000` only when the device already has the
