@@ -1023,8 +1023,13 @@ static inline void nerd_sha_ll_read_digest(void* ptr)
 
 static inline __attribute__((always_inline)) void nerd_sha_hal_wait_idle()
 {
-    while (DPORT_REG_READ(SHA_256_BUSY_REG))
+    // ESP-IDF documents SEQUENCE_REG_READ as the faster SMP-safe form for a
+    // read loop when interrupts are disabled by the caller. The critical
+    // section lasts only for one hardware SHA/LOAD operation.
+    DPORT_INTERRUPT_DISABLE();
+    while (DPORT_SEQUENCE_REG_READ(SHA_256_BUSY_REG))
     {}
+    DPORT_INTERRUPT_RESTORE();
 }
 
 static inline void nerd_sha_ll_fill_text_block_sha256(const void *input_text)
