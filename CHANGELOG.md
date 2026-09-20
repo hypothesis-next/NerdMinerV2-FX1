@@ -1,5 +1,27 @@
 # Changelog
 
+## V1.8.3-multipool-perf.8 - local safe-performance candidate
+
+### Changed
+
+- Uses ESP-IDF's documented protected sequence-read form for repeated classic
+  ESP32 SHA BUSY polling.
+- Keeps the SHA_TEXT window base in one address register, removing repeated
+  per-word address materialization without writing while the engine is busy.
+- Precomputes the job-constant contributions to software-SHA schedule words
+  W18 and W19.
+- Retains the documented sequential hardware pipeline and the existing fully
+  unrolled software engine; rejected compact and partial-unroll experiments
+  are not present in production source.
+
+### Validation status
+
+- Five million differential SHA cases pass with zero mismatches.
+- The `ESP32_2432S028_2USB` target builds successfully with unchanged static
+  RAM usage and unchanged 112-byte software-SHA stack frame.
+- Throughput effects remain **REQUIRES REAL HARDWARE**; no 600--800 kH/s claim
+  is made.
+
 ## V1.8.3-multipool-perf.6 - local correctness candidate
 
 ### Changed

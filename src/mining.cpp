@@ -159,7 +159,7 @@ struct JobRequest
   double difficulty;
   uint8_t sha_buffer[128];
   uint32_t midstate[8];
-  uint32_t bake[16];
+  uint32_t bake[17];
   uint8_t raw_header[80];
 };
 
@@ -360,7 +360,7 @@ void runStratumWorker(void *name) {
 
     uint32_t hw_midstate[8];
     uint32_t diget_mid[8];
-    uint32_t bake[16];
+    uint32_t bake[17];
     #if defined(CONFIG_IDF_TARGET_ESP32)
     uint8_t sha_buffer_swap[128];
     #endif
@@ -868,7 +868,7 @@ void minerWorkerHw(void * task_id)
 #ifdef VALIDATION
   uint8_t doubleHash[32];
   uint32_t diget_mid[8];
-  uint32_t bake[16];
+  uint32_t bake[17];
 #endif
 
   while (1)
@@ -1032,10 +1032,22 @@ static inline __attribute__((always_inline)) void nerd_sha_hal_wait_idle()
     DPORT_INTERRUPT_RESTORE();
 }
 
+static inline __attribute__((always_inline)) uint32_t *nerd_sha_text_words()
+{
+    uint32_t *words = reinterpret_cast<uint32_t *>(SHA_TEXT_BASE);
+
+    // Keep SHA_TEXT_BASE in one address register.  Without this compiler
+    // barrier GCC rematerializes many individual absolute MMIO addresses in
+    // the per-nonce fills.  The stores retain the same semantics used by the
+    // ESP-IDF low-level helper that this code specializes.
+    __asm__ __volatile__("" : "+r"(words));
+    return words;
+}
+
 static inline void nerd_sha_ll_fill_text_block_sha256(const void *input_text)
 {
-    uint32_t *data_words = (uint32_t *)input_text;
-    uint32_t *reg_addr_buf = (uint32_t *)(SHA_TEXT_BASE);
+    const uint32_t *data_words = static_cast<const uint32_t *>(input_text);
+    uint32_t *reg_addr_buf = nerd_sha_text_words();
 
     reg_addr_buf[0]  = data_words[0];
     reg_addr_buf[1]  = data_words[1];
@@ -1090,8 +1102,8 @@ static inline void nerd_sha_ll_fill_text_block_sha256_upper_half(const void *inp
 static inline __attribute__((always_inline))
 void nerd_sha_ll_fill_text_block_sha256_upper(const void *input_text, uint32_t nonce_be)
 {
-    uint32_t *data_words = (uint32_t *)input_text;
-    uint32_t *reg_addr_buf = (uint32_t *)(SHA_TEXT_BASE);
+    const uint32_t *data_words = static_cast<const uint32_t *>(input_text);
+    uint32_t *reg_addr_buf = nerd_sha_text_words();
 
     reg_addr_buf[0]  = data_words[0];
     reg_addr_buf[1]  = data_words[1];
@@ -1128,7 +1140,7 @@ void nerd_sha_ll_fill_text_block_sha256_upper(const void *input_text, uint32_t n
 
 static inline __attribute__((always_inline)) void nerd_sha_ll_fill_text_block_sha256_double()
 {
-    uint32_t *reg_addr_buf = (uint32_t *)(SHA_TEXT_BASE);
+    uint32_t *reg_addr_buf = nerd_sha_text_words();
 
 #if 0
     //No change

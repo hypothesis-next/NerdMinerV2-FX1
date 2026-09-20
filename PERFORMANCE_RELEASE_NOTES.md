@@ -1,4 +1,4 @@
-# V1.8.3-multipool-perf.6 local performance-candidate notes
+# V1.8.3-multipool-perf.8 local performance-candidate notes
 
 This is an unofficial NerdMiner_v2 performance and correctness test build. It
 is not an official or endorsed release of NerdMiner, BitMaker-hub, HeliosPool,
@@ -54,6 +54,27 @@ target disassembly support approximately 35--45 kH/s for the software worker.
 Residual attribution suggests approximately 295--315 kH/s for the production
 hardware worker, but the firmware has no per-worker physical counters, so that
 split remains an estimate rather than a measurement.
+
+Perf.8 keeps every hardware access within the documented sequential contract.
+Repeated BUSY reads now use ESP-IDF's protected sequence-read API, and the
+SHA_TEXT fill code retains one register-window base instead of rematerializing
+about 37 absolute addresses per nonce. Target disassembly reduces
+`minerWorkerHw` from 1,123 to 1,079 bytes without changing its 256-byte frame,
+three compressions, two LOADs, 40 SHA_TEXT writes or five BUSY waits.
+
+The software job bake now precomputes the constant contributions to W18 and
+W19. The hot function remains fully unrolled with a 112-byte frame and shrinks
+from 15,955 to 15,908 bytes. A 16-word circular-schedule engine and an
+eight-round partial-unroll engine both passed five million differential cases
+but were rejected: they were respectively about 17% and 6.3% slower in the
+host comparison and increased the Xtensa frame to 192 and 368 bytes.
+
+Static analysis suggests only a modest gain over the measured 340--350 kH/s
+baseline. The realistic unmeasured band is approximately 350--365 kH/s, with
+340--380 kH/s used as a conservative-to-optimistic envelope. Reaching 700 kH/s
+with a roughly 40 kH/s software worker would require the hardware path to fit
+three compressions and all MMIO work into about 364 CPU cycles per nonce; the
+documented sequential interface does not support that expectation.
 
 Per-function `-O2` and `-O3` variants were rejected because they increased IRAM,
 stack frames and spills. Fixed affinity, two-software-worker, unsupported

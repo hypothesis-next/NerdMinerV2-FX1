@@ -173,7 +173,7 @@ void testOptimizedDifferential(uint32_t cases) {
   uint64_t random = 0x4e6572644d696e65ULL;
   uint32_t filterPasses = 0;
   uint8_t padded[128], reference[32], optimized[32];
-  uint32_t midstate[8], bake[16];
+  uint32_t midstate[8], bake[17];
   for (uint32_t test = 0; test < cases; ++test) {
     for (size_t i = 0; i < 80; i += 8) {
       const uint64_t value = nextRandom(random);
@@ -197,7 +197,7 @@ void testOptimizedDifferential(uint32_t cases) {
 
 void benchmarkOptimized(uint32_t cases) {
   uint8_t padded[128] = {}, hash[32];
-  uint32_t midstate[8], bake[16], passes = 0;
+  uint32_t midstate[8], bake[17], passes = 0;
   padded[80] = 0x80; padded[126] = 0x02; padded[127] = 0x80;
   nerd_mids(midstate, padded);
   nerd_sha256_bake(midstate, padded + 64, bake);

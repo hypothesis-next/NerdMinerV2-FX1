@@ -1,6 +1,6 @@
 # Performance-test methodology
 
-V1.8.3-multipool-perf.6 is an unofficial local release candidate. It does
+V1.8.3-multipool-perf.8 is an unofficial local release candidate. It does
 not claim that one megahash per second has been achieved.
 
 ## What is validated on the host
@@ -113,3 +113,55 @@ not selected based on static estimates. Two current software workers cannot
 plausibly replace the inferred approximately 295--315 kH/s hardware contribution, and classic
 ESP32 has no supported SHA-state restore operation. Affinity and priority remain
 unchanged until measured on hardware.
+
+## Perf.8 documented-contract experiments
+
+The retained classic-ESP32 worker still performs exactly three SHA compression
+operations, two LOAD operations, 40 SHA_TEXT writes, five control writes and
+five BUSY waits per nonce.  None of the retained changes writes SHA_TEXT while
+BUSY is asserted.
+
+The BUSY loop uses ESP-IDF's documented sequence-read form while interrupts are
+disabled by the caller.  The SHA_TEXT fill helpers also keep the register-window
+base in one Xtensa address register.  Target disassembly reduced
+`minerWorkerHw` from 1,123 to 1,079 bytes and removed approximately 37 repeated
+absolute-address materializations.  Static RAM and the 256-byte worker frame
+are unchanged.  This is a disassembly result; its physical throughput effect
+still requires an A/B test on the target board.
+
+The software job bake now stores the constant contributions to W18 and W19.
+Per nonce, W18 requires only its nonce-dependent sigma term and W19 only its
+nonce addition.  Five million deterministic differential cases passed.  The
+`nerd_sha256d_baked` frame remains 112 bytes and its symbol decreased from
+15,955 to 15,908 bytes.  This removes useful work but represents only a small
+fraction of the approximately 5,850--6,150 cycles per software nonce.
+
+Two structurally different software engines were evaluated and rejected:
+
+| Candidate | Correctness | Host signal | Xtensa code / frame | Decision |
+| --- | --- | --- | --- | --- |
+| 16-word circular schedule | 5,000,000 cases | about 17% slower | 891 B / 192 B, plus 256 B DRAM constants | Rejected |
+| 8-round partial unroll with linear W[64] | 5,000,000 cases after alignment correction | about 6.3% slower | 7,103 B / 368 B | Rejected |
+
+The first partial-unroll draft began an eight-round group at round 18 and was
+correctly rejected by the differential test.  Aligning grouped rounds at 24
+made it byte-exact, but not faster.  Both experiments were removed from the
+production source.
+
+The current Xtensa routine has no per-nonce helper calls and only two branches,
+but its 5,826 decoded instructions contain 374 stack loads and 112 stack stores.
+Constant rotates already compile to the LX6 `ssai`/`src` pair; replacing those
+expressions with small inline assembly cannot reduce the two-instruction rotate
+primitive.  W16/W17, rounds 0--2 and the constant parts of W18/W19 are now
+precomputed.  From W20 onward the schedule depends nonlinearly on the nonce, and
+the second SHA depends on the entire first digest, so no further comparable
+per-job schedule split was identified.
+
+At the inferred 305 kH/s hardware contribution, the complete hardware path
+costs about 787 CPU cycles per nonce.  A 660 kH/s hardware worker (needed for
+700 kH/s combined with the current software worker) would have only 364 cycles
+for the three compressions, two LOADs, 45 writes, five waits and loop work.
+The safe address-generation change may plausibly recover a few percent, not a
+factor of two.  Until measured, the engineering expectation for perf.8 is
+roughly 340--380 kH/s combined, with 350--365 kH/s the realistic band.  These
+are static estimates, not measurements.
