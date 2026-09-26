@@ -24,7 +24,30 @@ extern nvMemory nvMem;
 
 OpenFontRender render;
 TFT_eSPI tft = TFT_eSPI();                  // Invoke library, pins defined in platformio.ini
-TFT_eSprite background = TFT_eSprite(&tft); // Invoke library sprite
+// Keep the largest normal-screen buffer allocated before TLS starts. Repeated
+// free/reallocate cycles otherwise fragment the byte-addressable heap and can
+// make the existing 125x163 sprite fail during a certificate handshake.
+class ReusableScreenSprite : public TFT_eSprite {
+public:
+  explicit ReusableScreenSprite(TFT_eSPI *display) : TFT_eSprite(display) {}
+  void *createSprite(int16_t w, int16_t h, uint8_t frames = 1) {
+    if (w <= 0 || h <= 0 || frames != 1 || uint32_t(w) * h > 125U * 163U)
+      return nullptr;
+    if (!TFT_eSprite::created() && !TFT_eSprite::createSprite(125, 163))
+      return nullptr;
+    _iwidth = _dwidth = _bitwidth = w;
+    _iheight = _dheight = h;
+    memset(getPointer(), 0, size_t(w) * h * sizeof(uint16_t));
+    cursor_x = cursor_y = 0;
+    _sx = _sy = 0; _sw = w; _sh = h; _scolor = TFT_BLACK;
+    rotation = 0;
+    setViewport(0, 0, w, h);
+    setPivot(w / 2, h / 2);
+    return getPointer();
+  }
+  void deleteSprite() {} // Retain capacity; each create resets logical geometry.
+};
+ReusableScreenSprite background(&tft);
 SPIClass hSPI(HSPI);
 TFT_eTouch<TFT_eSPI> touch(tft, ETOUCH_CS, 0xFF, hSPI); 
 
@@ -88,6 +111,10 @@ void esp32_2432S028R_Init(void)
   //render.setDrawer(background);  // Link drawing object to background instance (so font will be rendered on background)
   //render.setLineSpaceRatio(0.9); // Espaciado entre texto
 
+  if (!background.createSprite(125, 163)) {
+    Serial.println("Display buffer allocation failed");
+    return;
+  }
   // Load the font and check it can be read OK
   // if (render.loadFont(NotoSans_Bold, sizeof(NotoSans_Bold)))
   if (render.loadFont(DigitalNumbers, sizeof(DigitalNumbers)))
@@ -134,7 +161,9 @@ void drawPoolValue(const char *value, int16_t x, int16_t y,
     background.drawString(value, x, y);
     return;
   }
-  render.cdrawString(value, x, y, TFT_BLACK);
+  // drawString honors MiddleCenter; cdrawString forces TopCenter and clips
+  // numeric values at the bottom of the 50-pixel pool panel.
+  render.drawString(value, x, y, TFT_BLACK);
 }
 
 void printheap(){

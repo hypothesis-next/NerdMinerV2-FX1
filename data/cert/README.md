@@ -16,7 +16,7 @@ Sources:
 
 ## HeliosPool trust anchor
 
-`gts_root_r4.pem` is the self-signed GTS Root R4 certificate used only by the
+`gts_root_r4.pem` is the historical self-signed GTS Root R4 certificate formerly used by the
 HeliosPool statistics provider. It was retrieved from the official Google Trust
 Services root collection on 2026-09-12:
 
@@ -29,6 +29,19 @@ Services root collection on 2026-09-12:
 - Committed PEM SHA-256:
   `7E8B80D078D3DD77D3ED2108DD2B33412C12D7D72CB0965741C70708691776A2`
 
-The certificate is embedded as a null-terminated text asset. Hostname and
+The current Helios endpoint uses Let's Encrypt. Its dedicated, self-signed
+ISRG Root X2 trust anchor is `isrg_root_x2.pem`:
+
+- Official source: https://letsencrypt.org/certs/isrg-root-x2.pem
+- Subject and issuer: `CN=ISRG Root X2,O=Internet Security Research Group,C=US`
+- Validity: 2020-09-04 through 2040-09-17 16:00:00 UTC
+- DER SHA-256: `69729b8e15a86efc177a57afb7171dfc64add28c2fca8cf1507e34453ccb1470`
+- Exact PEM SHA-256: `a13d881e11fe6df181b53841f9fa738a2d7ca9ae7be3d53c866f722b4242b013`
+
+This avoids extending the server's valid chain through the cross-sign to the
+larger RSA ISRG Root X1. `test/verify_helios_root.py --live` verifies the root's
+self-signature, constraints, exact bytes, live chain and hostname rejection.
+
+Only the current X2 certificate is embedded as a null-terminated text asset. Hostname and
 certificate validity verification remain enabled. Other providers continue to
 use `x509_crt_bundle.bin`; the firmware never falls back to insecure TLS.

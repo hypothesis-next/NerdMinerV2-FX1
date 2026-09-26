@@ -4,6 +4,7 @@
 #include <WiFi.h>
 #include <string.h>
 #include <time.h>
+#include <esp_heap_caps.h>
 
 #include "PoolRegistry.h"
 #include "PoolStatsPolicy.h"
@@ -19,7 +20,8 @@ constexpr uint32_t MIN_LARGEST_HEAP_BLOCK = 24000;
 // TLS setup in WiFiClientSecure exceeds 10 KiB on classic ESP32. Keep the
 // network-only statistics task isolated from mining with a bounded 16 KiB stack.
 constexpr uint32_t SERVICE_TASK_STACK = 16384;
-constexpr UBaseType_t SERVICE_TASK_PRIORITY = 1;
+// Above the CPU-bound software miner, below Stratum and display tasks.
+constexpr UBaseType_t SERVICE_TASK_PRIORITY = 2;
 
 portMUX_TYPE snapshotMux = portMUX_INITIALIZER_UNLOCKED;
 PoolIdentity identity{};
@@ -64,8 +66,13 @@ void refreshStats(uint32_t now) {
   current.lastAttemptMs = now;
   publishSnapshot(current);
 
-  if (ESP.getFreeHeap() < MIN_FREE_HEAP ||
-      ESP.getMaxAllocHeap() < MIN_LARGEST_HEAP_BLOCK) {
+  const uint32_t heapCaps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+  const uint32_t freeBytes = heap_caps_get_free_size(heapCaps);
+  const uint32_t largestBlock = heap_caps_get_largest_free_block(heapCaps);
+  Serial.printf("[PoolStats] byte heap free=%u max=%u min=%u\n", freeBytes,
+    largestBlock, heap_caps_get_minimum_free_size(heapCaps));
+  if (freeBytes < MIN_FREE_HEAP || largestBlock < MIN_LARGEST_HEAP_BLOCK) {
+    Serial.printf("[PoolStats] memory gate heap=%u max=%u\n", freeBytes, largestBlock);
     const PoolUpdateDecision decision = updatePoolSnapshotAfterFetch(
         getPoolStatsSnapshot(), current,
         {PoolFetchStatus::RetryableError, 0}, now);
@@ -77,11 +84,19 @@ void refreshStats(uint32_t now) {
   PoolStatsSnapshot candidate = current;
   const PoolFetchResult result =
       provider->fetch(identity, candidate, lastModified, sizeof(lastModified));
+  Serial.printf("[PoolStats] fetch result=%u HTTP=%d hasData=%u\n",
+    static_cast<unsigned>(result.status), result.httpStatus, candidate.hasData);
+  if (result.status == PoolFetchStatus::Success) {
+    Serial.printf("[PoolStats] verified snapshot best=%s workers=%s rate=%s\n",
+      candidate.bestDifficulty, candidate.workersCount, candidate.totalHashRate);
+  }
 
   const PoolUpdateDecision decision =
-      updatePoolSnapshotAfterFetch(current, candidate, result, now);
+      updatePoolSnapshotAfterFetch(current, candidate, result, millis());
   publishSnapshot(decision.snapshot);
-  nextAttemptMs = now + decision.nextDelayMs;
+  // A slow TLS computation must not consume its own retry delay and cause
+  // immediately repeated requests when the network call finally returns.
+  nextAttemptMs = millis() + decision.nextDelayMs;
 }
 
 void poolStatsTask(void *) {

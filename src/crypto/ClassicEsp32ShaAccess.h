@@ -15,6 +15,22 @@
 
 namespace classic_sha {
 
+// Only inside a DPORT_STALL_OTHER_CPU_START/END interval. ESP-IDF explicitly
+// permits raw DPORT reads in that mode; no APB pre-read is needed. Keep MEMW
+// after each command so polling cannot observe the preceding idle state.
+static inline __attribute__((always_inline)) void waitIdleOtherCpuStalled()
+{
+    uint32_t busy;
+    const uint32_t status = SHA_256_BUSY_REG;
+    __asm__ __volatile__(
+        "memw\n"
+        "1: l32i %[busy], %[status], 0\n"
+        "bnez %[busy], 1b\n"
+        : [busy] "=&a" (busy)
+        : [status] "a" (status)
+        : "memory");
+}
+
 static inline __attribute__((always_inline)) void waitIdle()
 {
 #if defined(CONFIG_ESP32_DPORT_WORKAROUND) && defined(ESP_PLATFORM)

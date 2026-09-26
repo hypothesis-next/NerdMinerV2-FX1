@@ -9,19 +9,22 @@
 #include "PoolStatsParsers.h"
 #include "PoolStatsPolicy.h"
 #include "../version.h"
+#include "../crypto/ShaResourcePolicy.h"
 
 namespace {
 
 constexpr uint32_t CONNECT_TIMEOUT_MS = 4000;
 constexpr uint16_t READ_TIMEOUT_MS = 5000;
-constexpr uint32_t TLS_HANDSHAKE_TIMEOUT_SECONDS = 5;
+// The current multi-certificate P-384 chain exceeds five seconds on classic
+// ESP32. Keep a bounded handshake deadline without weakening verification.
+constexpr uint32_t TLS_HANDSHAKE_TIMEOUT_SECONDS = 15;
 constexpr int MAX_RESPONSE_BYTES = 16384;
 constexpr char USER_AGENT[] = "NerdMinerV2-MultiPool/" CURRENT_VERSION;
 
 extern const uint8_t rootca_crt_bundle_start[]
     asm("_binary_data_cert_x509_crt_bundle_bin_start");
-extern const char gts_root_r4_pem_start[]
-    asm("_binary_data_cert_gts_root_r4_pem_start");
+extern const char isrg_root_x2_pem_start[]
+    asm("_binary_data_cert_isrg_root_x2_pem_start");
 
 enum class PoolResponseFormat : uint8_t {
   PublicPool,
@@ -30,7 +33,7 @@ enum class PoolResponseFormat : uint8_t {
 
 enum class TlsTrust : uint8_t {
   GenericBundle,
-  GtsRootR4
+  IsrgRootX2
 };
 
 class LimitedStream : public Stream {
@@ -146,6 +149,9 @@ PoolFetchResult executeRequest(const PoolIdentity &identity,
     return {PoolFetchStatus::InvalidResponse, 0};
   }
 
+  const bool secure = strncmp(url, "https://", 8) == 0;
+  // Declared first so this guard outlives all HTTP/TLS cleanup on every return.
+  SecureTransportWork transportWork(secure);
   HTTPClient http;
   http.setConnectTimeout(CONNECT_TIMEOUT_MS);
   http.setTimeout(READ_TIMEOUT_MS);
@@ -158,11 +164,10 @@ PoolFetchResult executeRequest(const PoolIdentity &identity,
 
   WiFiClient plainClient;
   WiFiClientSecure secureClient;
-  const bool secure = strncmp(url, "https://", 8) == 0;
   bool began = false;
   if (secure) {
-    if (tlsTrust == TlsTrust::GtsRootR4) {
-      secureClient.setCACert(gts_root_r4_pem_start);
+    if (tlsTrust == TlsTrust::IsrgRootX2) {
+      secureClient.setCACert(isrg_root_x2_pem_start);
     } else {
       secureClient.setCACertBundle(rootca_crt_bundle_start);
     }
@@ -183,6 +188,14 @@ PoolFetchResult executeRequest(const PoolIdentity &identity,
   }
 
   const int status = http.GET();
+  if (helios) {
+    Serial.printf("[PoolStats] Helios HTTP=%d\n", status);
+    if (status < 0) {
+      char tlsError[128] = {};
+      const int tlsCode = secureClient.lastError(tlsError, sizeof(tlsError));
+      Serial.printf("[PoolStats] TLS=%d detail=%s\n", tlsCode, tlsError);
+    }
+  }
   if (status == HTTP_CODE_NOT_MODIFIED) {
     http.end();
     return {PoolFetchStatus::NotModified, static_cast<int16_t>(status)};
@@ -226,7 +239,7 @@ class HeliosPoolProvider final : public PoolStatsProvider {
                         PoolStatsSnapshot &snapshot, char *lastModified,
                         size_t lastModifiedSize) override {
     return executeRequest(identity, snapshot, PoolResponseFormat::Helios,
-                          TlsTrust::GtsRootR4, lastModified, lastModifiedSize);
+                          TlsTrust::IsrgRootX2, lastModified, lastModifiedSize);
   }
 };
 

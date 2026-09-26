@@ -21,6 +21,7 @@
 #include "i2c_master.h"
 #include "crypto/ReferenceSha256.h"
 #include "crypto/MiningRangePolicy.h"
+#include "crypto/ShaResourcePolicy.h"
 
 //10 Jobs per second
 #define NONCE_PER_JOB_SW 4096
@@ -692,6 +693,16 @@ void runStratumWorker(void *name) {
           Serial.printf("CRITICAL: candidate SHA-256d validation failed (generation=%u nonce=%08x errors=%u)\n",
                         res->generation, res->nonce,
                         s_validation_errors.load(std::memory_order_relaxed));
+          uint8_t reference[32];
+          mining_validation::referenceSha256d(res->raw_header, 80, reference);
+          Serial.print("SHA diagnostic optimized=");
+          for (unsigned i=0; i<32; ++i) Serial.printf("%02x", res->hash[i]);
+          Serial.print(" reference=");
+          for (unsigned i=0; i<32; ++i) Serial.printf("%02x", reference[i]);
+          Serial.println();
+          Serial.print("SHA diagnostic header=");
+          for (unsigned i=0; i<80; ++i) Serial.printf("%02x%s", res->raw_header[i], (i&3U)==3U ? " " : "");
+          Serial.println();
           continue;
         }
         if (!mining_validation::candidateEligible(meets_network_target,
@@ -1230,6 +1241,31 @@ static inline __attribute__((always_inline)) void nerd_sha_ll_fill_text_block_sh
 
 namespace {
 
+// SHA_TEXT is shared across all three classic ESP32 engines. Reserve them
+// together before amortizing its critical section; other SDK users then take
+// their documented software fallback instead of starting another algorithm.
+static bool tryReserveClassicSha()
+{
+  if (!esp_sha_try_lock_engine(SHA2_256)) return false;
+  if (!esp_sha_try_lock_engine(SHA1)) {
+    esp_sha_unlock_engine(SHA2_256);
+    return false;
+  }
+  if (!esp_sha_try_lock_engine(SHA2_512)) {
+    esp_sha_unlock_engine(SHA1);
+    esp_sha_unlock_engine(SHA2_256);
+    return false;
+  }
+  return true;
+}
+
+static void releaseClassicSha()
+{
+  esp_sha_unlock_engine(SHA2_512);
+  esp_sha_unlock_engine(SHA1);
+  esp_sha_unlock_engine(SHA2_256);
+}
+
 // The classic ESP32 SHA engine cannot restore an arbitrary midstate. The
 // experimental path below depends on undocumented SHA_TEXT latching and is
 // compiled only for explicit development builds.
@@ -1288,6 +1324,8 @@ static bool diagCheckNonce(const JobRequest *job, uint32_t nonce,
                            bool passes_filter);
 #endif
 
+static constexpr uint32_t CLASSIC_SHA_GROUP_NONCES = 1024;
+
 static void IRAM_ATTR __attribute__((noinline, optimize("O2")))
 runClassicHardwareSequential(const JobRequest *job,
                                          JobResult *result,
@@ -1296,13 +1334,22 @@ runClassicHardwareSequential(const JobRequest *job,
 {
   result->nonce_count = job->nonce_count;
   uint32_t *const words = nerd_sha_text_words();
+  bool memory_locked = false;
   for (uint32_t offset = 0; offset < job->nonce_count; ++offset)
   {
     const uint32_t nonce = job->nonce_start + offset;
     // SHA_TEXT is shared by SHA-1/256/384/512, not only SHA-256 users.
-    // Keep the SDK critical section to one nonce and wait for all engines.
-    esp_sha_lock_memory_block();
-    sha_hal_wait_idle();
+    // Amortize the shared-memory critical section over a bounded group. Other SHA
+    // algorithms cannot start while this critical section is held. Wait for all engines
+    // on acquisition; subsequent nonces already end with SHA-256 confirmed idle.
+    // Local interrupts are masked by the SDK lock: never yield or perform
+    // network, queue or reference-validation work while holding this lock.
+    if (!memory_locked) {
+      esp_sha_lock_memory_block();
+      sha_hal_wait_idle();
+      DPORT_STALL_OTHER_CPU_START();
+      memory_locked = true;
+    }
     nerd_sha_ll_fill_text_block_sha256(sha_buffer, words);
     nerd_sha_control_write(words, SHA_256_START_REG);
 
@@ -1310,19 +1357,20 @@ runClassicHardwareSequential(const JobRequest *job,
     // SHA_TEXT is not touched until the engine is confirmed idle.
     const uint32_t nonce_be = classic_sha::byteSwap(nonce);
 
-    nerd_sha_hal_wait_idle();
+    classic_sha::waitIdleOtherCpuStalled();
     nerd_sha_ll_fill_text_block_sha256_upper(sha_buffer + 64, nonce_be, words);
     nerd_sha_control_write(words, SHA_256_CONTINUE_REG);
 
-    nerd_sha_hal_wait_idle();
+    classic_sha::waitIdleOtherCpuStalled();
     nerd_sha_control_write(words, SHA_256_LOAD_REG);
-    nerd_sha_hal_wait_idle();
+    classic_sha::waitIdleOtherCpuStalled();
     nerd_sha_ll_fill_text_block_sha256_double(words);
     nerd_sha_control_write(words, SHA_256_START_REG);
 
-    nerd_sha_hal_wait_idle();
+    classic_sha::waitIdleOtherCpuStalled();
     nerd_sha_control_write(words, SHA_256_LOAD_REG);
-    const uint32_t final_word = classic_sha::waitIdleAndReadFinalWord();
+    classic_sha::waitIdleOtherCpuStalled();
+    const uint32_t final_word = _DPORT_REG_READ(SHA_TEXT_BASE + 7 * sizeof(uint32_t));
     const bool passes_filter = nerd_sha_ll_read_digest_swap_from_word(hash,
 #ifdef NERDMINER_SHA_DIAGNOSTICS
       s_diag_force_digest,
@@ -1330,7 +1378,11 @@ runClassicHardwareSequential(const JobRequest *job,
       false,
 #endif
       final_word);
-    esp_sha_unlock_memory_block();
+    if (passes_filter || ((offset + 1U) & (CLASSIC_SHA_GROUP_NONCES - 1U)) == 0 || offset + 1U == job->nonce_count) {
+      DPORT_STALL_OTHER_CPU_END();
+      esp_sha_unlock_memory_block();
+      memory_locked = false;
+    }
 #ifdef NERDMINER_SHA_DIAGNOSTICS
     if (!diagCheckNonce(job, nonce, hash, final_word, passes_filter)) {
       result->nonce_count = offset + 1;
@@ -1351,6 +1403,10 @@ runClassicHardwareSequential(const JobRequest *job,
       result->nonce_count = offset + 1;
       break;
     }
+  }
+  if (memory_locked) {
+    DPORT_STALL_OTHER_CPU_END();
+    esp_sha_unlock_memory_block();
   }
 }
 
@@ -1495,7 +1551,7 @@ void minerWorkerHw(void * task_id)
 
       if (mining_validation::requiresFullDigest(job->difficulty, job->network_target)) {
         runReferenceRange(job.get(), result.get());
-      } else if (!esp_sha_try_lock_engine(SHA2_256)) {
+      } else if (secureTransportActive() || !tryReserveClassicSha()) {
         runSoftwareFallback(job.get(), result.get());
       } else {
 #if NERDMINER_EXPERIMENTAL_SHA_TEXT_OVERLAP
@@ -1522,7 +1578,7 @@ void minerWorkerHw(void * task_id)
 #else
       runClassicHardwareSequential(job.get(), result.get(), sha_buffer, hash);
 #endif
-      esp_sha_unlock_engine(SHA2_256);
+      releaseClassicSha();
       }
     } else
       vTaskDelay(2 / portTICK_PERIOD_MS);

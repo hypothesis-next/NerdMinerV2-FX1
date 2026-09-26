@@ -6,6 +6,7 @@
 
 #include "../src/crypto/ReferenceSha256.h"
 #include "../src/crypto/MiningRangePolicy.h"
+#include "../src/crypto/ShaResourcePolicy.h"
 #include "../src/ShaTests/nerdSHA256plus.h"
 
 namespace {
@@ -256,6 +257,22 @@ void benchmarkOptimized(uint32_t cases) {
 }  // namespace
 
 int main(int argc, char **argv) {
+  require(!secureTransportActive(), "transport initially idle");
+  {
+    SecureTransportWork plain(false);
+    require(!secureTransportActive(), "plain request does not reserve SHA policy");
+    SecureTransportWork secure(true);
+    require(secureTransportActive(), "secure request selects software fallback");
+    {
+      SecureTransportWork nested(true);
+      require(secureTransportSessions().load() == 2, "nested transport ownership");
+    }
+    require(secureTransportActive(), "nested cleanup preserves outer ownership");
+  }
+  require(!secureTransportActive(), "transport cleanup restores hardware eligibility");
+  try { SecureTransportWork secure(true); throw 1; }
+  catch (int) {}
+  require(!secureTransportActive(), "error cleanup restores hardware eligibility");
   uint32_t cases = argc >= 2 ? static_cast<uint32_t>(strtoul(argv[1], nullptr, 10)) : 2000000;
   testReferenceVectors();
   testTargetComparison();

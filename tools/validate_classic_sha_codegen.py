@@ -64,7 +64,7 @@ class Kernel:
             self.preread = True
             return 0
         if self.TEXT <= address <= self.TEXT + 0x9c:
-            assert self.preread and (self.ps & 15) >= 5, 'unprotected DPORT read'
+            assert self.other_cpu_stalled or (self.preread and (self.ps & 15) >= 5), 'unprotected DPORT read'
             self.preread = False
             if address == self.TEXT + 0x9c:
                 assert not self.command_needs_barrier, 'BUSY read before command MEMW barrier'
@@ -133,6 +133,7 @@ class Kernel:
         self.text = [0] * 16
         self.busy = self.phase = self.writes = self.digest_reads = 0
         self.memory_locked = False
+        self.other_cpu_stalled = False
         self.command_needs_barrier = False
         self.delay = delay
         self.preread = False
@@ -221,6 +222,13 @@ class Kernel:
                 elif name == 'esp_dport_access_sequence_reg_read':
                     self.preread = True
                     r[10] = self.read(r[10])
+                elif name == 'esp_dport_access_reg_read':
+                    # SDK routine: RSIL 5, APB pre-read, DPORT load, restore PS.
+                    saved_ps = self.ps
+                    self.ps = (self.ps & ~15) | 5
+                    self.preread = True
+                    r[10] = self.read(r[10])
+                    self.ps = saved_ps
                 elif name == '_xtos_set_intlevel':
                     self.ps = (self.ps & ~15) | (r[10] & 15)
                 elif name.startswith('diff_from_target('):
@@ -237,10 +245,16 @@ class Kernel:
                 elif name == 'esp_sha_lock_memory_block':
                     assert not self.memory_locked
                     self.memory_locked, self.memory_ps = True, self.ps
-                    self.ps = (self.ps & ~15) | 5
+                    self.ps = (self.ps & ~15) | 3
                 elif name == 'esp_sha_unlock_memory_block':
-                    assert self.memory_locked and not self.busy
+                    assert self.memory_locked and not self.busy and not self.other_cpu_stalled
                     self.memory_locked, self.ps = False, self.memory_ps
+                elif name == 'esp_ipc_isr_stall_other_cpu':
+                    assert self.memory_locked and not self.other_cpu_stalled
+                    self.other_cpu_stalled = True
+                elif name == 'esp_ipc_isr_release_other_cpu':
+                    assert self.memory_locked and self.other_cpu_stalled and not self.busy
+                    self.other_cpu_stalled = False
                 elif name == 'sha_hal_wait_idle':
                     assert self.memory_locked and not self.busy
                 elif name.startswith('isSha256Valid('): r[10] = int(any(self.digest))
@@ -266,6 +280,7 @@ class Kernel:
             if expected[-2:] == b'\0\0': hits.append(expected_header)
         assert self.controls == [0x90, 0x94, 0x98, 0x90, 0x98] * expected_count
         assert self.writes == 40 * expected_count and self.ps == initial_ps
+        assert not self.other_cpu_stalled and not self.memory_locked
         assert not self.memory_locked
         hit = bool(hits)
         assert self.digest_reads == expected_count + 7 * len(hits), 'wrong filter branch'
