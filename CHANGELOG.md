@@ -1,5 +1,25 @@
 # Changelog
 
+## V1.8.3-multipool-perf.9 - local protected-HW performance candidate
+
+- Moves the classic-ESP32 sequential SHA range kernel into IRAM.
+- Inlines the official APB pre-read / interrupt-protected DPORT workaround
+  into BUSY polling, removing repeated windowed function calls.
+- Combines final idle polling and the exact-filter digest-word read under
+  one protected interval; inlines an integer-only nonce byte swap.
+- Shares one SHA register-window base across the range and control writes.
+- Selects per-function `-O2` for the HW kernel only; the SW engine stays `-Os`.
+- Separates candidate presence from the valid nonce value `0xFFFFFFFF`.
+- Adds emitted-Xtensa instruction / SHA-MMIO model tests for header ownership,
+  padding, candidate storage, nonce wrap, cancellation and the peripheral contract.
+- Rejects schedule-first, split-compression and alternate-majority SW trials;
+  the production software SHA source is unchanged from perf.8.
+- No counter/timing, UI, Stratum, wallet, PoolStats, TLS or NTP changes.
+- Local builds and tests only. Physical throughput, stability, heap/stack and
+  TLS/hardware-SHA coexistence require later real-board validation.
+
+See `docs/PERF9_RESULTS.md` for evidence, experiment decisions and estimates.
+
 ## V1.8.3-multipool-perf.8 - local safe-performance candidate
 
 ### Changed

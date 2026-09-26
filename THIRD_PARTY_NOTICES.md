@@ -1,5 +1,14 @@
 # Third-party notices
 
+The protected classic-ESP32 DPORT access in
+`src/crypto/ClassicEsp32ShaAccess.h` is derived from ESP-IDF v4.4.6
+`components/esp_hw_support/port/esp32/dport_access.c`:
+https://github.com/espressif/esp-idf/blob/v4.4.6/components/esp_hw_support/port/esp32/dport_access.c
+Copyright 2010-2021 Espressif Systems (Shanghai) CO LTD; Apache License 2.0.
+The modification inlines protected polling and combines the final idle check
+with a protected digest-word read. Its notices are retained in the header and
+the complete license is included in `LICENSES/Apache-2.0.txt`.
+
 This unofficial modification retains the upstream NerdMiner_v2 source,
 libraries, assets, license files, and their existing notices.
 

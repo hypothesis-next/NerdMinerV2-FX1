@@ -6,7 +6,7 @@
 
 This fork preserves the V1.8.3 Stratum mining implementation and replaces the
 pool dashboard's fixed Public Pool behavior with a provider-based statistics
-layer. The current local release candidate is **V1.8.3-multipool-perf.8**; the
+layer. The current local release candidate is **V1.8.3-multipool-perf.9**; the
 previous **V1.8.3-multipool.1** release remains the rollback baseline.
 
 Key behavior:

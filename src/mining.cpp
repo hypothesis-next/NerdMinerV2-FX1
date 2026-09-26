@@ -171,6 +171,7 @@ struct JobResult
   double difficulty;
   uint8_t hash[32];
   uint8_t raw_header[80];
+  bool has_candidate = false;
 };
 
 static std::mutex s_job_mutex;
@@ -532,6 +533,7 @@ void runStratumWorker(void *name) {
         {
           result->generation = s_working_generation.load(std::memory_order_acquire);
           result->nonce = nonce_vector[n];
+          result->has_candidate = true;
           result->nonce_count = 0;
           result->difficulty = diff_from_target(result->hash);
           memcpy(result->raw_header, mMiner.bytearray_blockheader,
@@ -606,7 +608,7 @@ void runStratumWorker(void *name) {
       job_result_list.pop_front();
 
       addCompletedHashes(res->nonce_count);
-      if (res->difficulty > currentPoolDifficulty && res->nonce != 0xFFFFFFFF)
+      if (res->difficulty > currentPoolDifficulty && res->has_candidate)
       {
         if (!client.connected())
           break;
@@ -697,6 +699,7 @@ void minerWorkerSw(void * task_id)
           {
             result->difficulty = diff_hash;
             result->nonce = job->nonce_start+n;
+            result->has_candidate = true;
             memcpy(result->hash, hash, 32);
             memcpy(result->raw_header, job->raw_header, sizeof(result->raw_header));
             memcpy(result->raw_header + 76, &result->nonce, sizeof(result->nonce));
@@ -945,6 +948,7 @@ void minerWorkerHw(void * task_id)
             {
               result->difficulty = diff_hash;
               result->nonce = n;
+              result->has_candidate = true;
               memcpy(result->hash, hash, sizeof(hash));
               memcpy(result->raw_header, job->raw_header, sizeof(result->raw_header));
               memcpy(result->raw_header + 76, &result->nonce, sizeof(result->nonce));
@@ -977,11 +981,10 @@ void minerWorkerHw(void * task_id)
 #if defined(CONFIG_IDF_TARGET_ESP32)
 
 static inline __attribute__((always_inline))
-bool nerd_sha_ll_read_digest_swap(void* ptr, bool force_read)
+bool nerd_sha_ll_read_digest_swap_from_word(void* ptr, bool force_read, uint32_t fin)
 {
   // Most nonces need only the final word for the exact 16-bit early filter.
   // DPORT_REG_READ is the framework's SMP-safe path for a single register.
-  const uint32_t fin = DPORT_REG_READ(SHA_TEXT_BASE + 7 * 4);
   const bool passes_early_filter = (uint32_t)(fin & 0xFFFF) == 0;
   if (!passes_early_filter && !force_read)
     return false;
@@ -1001,12 +1004,6 @@ bool nerd_sha_ll_read_digest_swap(void* ptr, bool force_read)
   return passes_early_filter;
 }
 
-static inline __attribute__((always_inline))
-bool nerd_sha_ll_read_digest_swap_if(void* ptr)
-{
-  return nerd_sha_ll_read_digest_swap(ptr, false);
-}
-
 static inline void nerd_sha_ll_read_digest(void* ptr)
 {
   DPORT_INTERRUPT_DISABLE();
@@ -1021,15 +1018,11 @@ static inline void nerd_sha_ll_read_digest(void* ptr)
   DPORT_INTERRUPT_RESTORE();
 }
 
+#include "crypto/ClassicEsp32ShaAccess.h"
+
 static inline __attribute__((always_inline)) void nerd_sha_hal_wait_idle()
 {
-    // ESP-IDF documents SEQUENCE_REG_READ as the faster SMP-safe form for a
-    // read loop when interrupts are disabled by the caller. The critical
-    // section lasts only for one hardware SHA/LOAD operation.
-    DPORT_INTERRUPT_DISABLE();
-    while (DPORT_SEQUENCE_REG_READ(SHA_256_BUSY_REG))
-    {}
-    DPORT_INTERRUPT_RESTORE();
+    classic_sha::waitIdle();
 }
 
 static inline __attribute__((always_inline)) uint32_t *nerd_sha_text_words()
@@ -1044,10 +1037,10 @@ static inline __attribute__((always_inline)) uint32_t *nerd_sha_text_words()
     return words;
 }
 
-static inline void nerd_sha_ll_fill_text_block_sha256(const void *input_text)
+static inline void nerd_sha_ll_fill_text_block_sha256(
+    const void *input_text, uint32_t *reg_addr_buf = nerd_sha_text_words())
 {
     const uint32_t *data_words = static_cast<const uint32_t *>(input_text);
-    uint32_t *reg_addr_buf = nerd_sha_text_words();
 
     reg_addr_buf[0]  = data_words[0];
     reg_addr_buf[1]  = data_words[1];
@@ -1100,10 +1093,11 @@ static inline void nerd_sha_ll_fill_text_block_sha256_upper_half(const void *inp
 #endif
 
 static inline __attribute__((always_inline))
-void nerd_sha_ll_fill_text_block_sha256_upper(const void *input_text, uint32_t nonce_be)
+void nerd_sha_ll_fill_text_block_sha256_upper(
+    const void *input_text, uint32_t nonce_be,
+    uint32_t *reg_addr_buf = nerd_sha_text_words())
 {
     const uint32_t *data_words = static_cast<const uint32_t *>(input_text);
-    uint32_t *reg_addr_buf = nerd_sha_text_words();
 
     reg_addr_buf[0]  = data_words[0];
     reg_addr_buf[1]  = data_words[1];
@@ -1138,9 +1132,9 @@ void nerd_sha_ll_fill_text_block_sha256_upper(const void *input_text, uint32_t n
 #endif
 }
 
-static inline __attribute__((always_inline)) void nerd_sha_ll_fill_text_block_sha256_double()
+static inline __attribute__((always_inline)) void nerd_sha_ll_fill_text_block_sha256_double(
+    uint32_t *reg_addr_buf = nerd_sha_text_words())
 {
-    uint32_t *reg_addr_buf = nerd_sha_text_words();
 
 #if 0
     //No change
@@ -1182,6 +1176,7 @@ static void recordHardwareCandidate(JobResult *result, const JobRequest *job,
   {
     result->difficulty = diff_hash;
     result->nonce = nonce;
+    result->has_candidate = true;
     memcpy(result->hash, hash, sizeof(result->hash));
     memcpy(result->raw_header, job->raw_header, sizeof(result->raw_header));
     memcpy(result->raw_header + 76, &nonce, sizeof(nonce));
@@ -1202,36 +1197,47 @@ static bool validateHardwareHash(const JobRequest *job, uint32_t nonce,
 }
 #endif
 
-static void runClassicHardwareSequential(const JobRequest *job,
+static inline __attribute__((always_inline))
+void nerd_sha_control_write(uint32_t *words, uint32_t control_register)
+{
+    // Derive the offset from the framework register definitions. DPORT writes
+    // do not require the read workaround; retain its volatile store/barrier.
+    DPORT_REG_WRITE(reinterpret_cast<uintptr_t>(words) +
+                    (control_register - SHA_TEXT_BASE), 1);
+}
+
+static void IRAM_ATTR __attribute__((noinline, optimize("O2")))
+runClassicHardwareSequential(const JobRequest *job,
                                          JobResult *result,
                                          uint8_t sha_buffer[128],
                                          uint8_t hash[32])
 {
   result->nonce_count = job->nonce_count;
+  uint32_t *const words = nerd_sha_text_words();
   for (uint32_t offset = 0; offset < job->nonce_count; ++offset)
   {
     const uint32_t nonce = job->nonce_start + offset;
-    nerd_sha_ll_fill_text_block_sha256(sha_buffer);
-    sha_ll_start_block(SHA2_256);
+    nerd_sha_ll_fill_text_block_sha256(sha_buffer, words);
+    nerd_sha_control_write(words, SHA_256_START_REG);
 
     // This CPU-only conversion is safe to overlap with the first compression;
     // SHA_TEXT is not touched until the engine is confirmed idle.
-    const uint32_t nonce_be = __builtin_bswap32(nonce);
+    const uint32_t nonce_be = classic_sha::byteSwap(nonce);
 
     nerd_sha_hal_wait_idle();
-    nerd_sha_ll_fill_text_block_sha256_upper(sha_buffer + 64, nonce_be);
-    sha_ll_continue_block(SHA2_256);
+    nerd_sha_ll_fill_text_block_sha256_upper(sha_buffer + 64, nonce_be, words);
+    nerd_sha_control_write(words, SHA_256_CONTINUE_REG);
 
     nerd_sha_hal_wait_idle();
-    sha_ll_load(SHA2_256);
+    nerd_sha_control_write(words, SHA_256_LOAD_REG);
     nerd_sha_hal_wait_idle();
-    nerd_sha_ll_fill_text_block_sha256_double();
-    sha_ll_start_block(SHA2_256);
+    nerd_sha_ll_fill_text_block_sha256_double(words);
+    nerd_sha_control_write(words, SHA_256_START_REG);
 
     nerd_sha_hal_wait_idle();
-    sha_ll_load(SHA2_256);
-    nerd_sha_hal_wait_idle();
-    if (nerd_sha_ll_read_digest_swap_if(hash))
+    nerd_sha_control_write(words, SHA_256_LOAD_REG);
+    const uint32_t final_word = classic_sha::waitIdleAndReadFinalWord();
+    if (nerd_sha_ll_read_digest_swap_from_word(hash, false, final_word))
       recordHardwareCandidate(result, job, nonce, hash);
 
     if ((offset & 0xFFU) == 0 &&
@@ -1286,7 +1292,8 @@ runClassicHardwarePipelined(const JobRequest *job,
     nerd_sha_hal_wait_idle();
 
     const bool sample = (offset & (kHardwarePipelineVerifyInterval - 1U)) == 0;
-    const bool passes_early_filter = nerd_sha_ll_read_digest_swap(hash, sample);
+    const bool passes_early_filter = nerd_sha_ll_read_digest_swap_from_word(
+        hash, sample, DPORT_REG_READ(SHA_TEXT_BASE + 7 * 4));
 
     // Complete preparation of the next first block only after copying any
     // digest that is needed for a sample or candidate.
@@ -1362,6 +1369,7 @@ void minerWorkerHw(void * task_id)
                         errors);
 
           result->nonce = 0xFFFFFFFF;
+          result->has_candidate = false;
           result->difficulty = job->difficulty;
           memset(result->hash, 0, sizeof(result->hash));
           memset(result->raw_header, 0, sizeof(result->raw_header));

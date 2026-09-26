@@ -1,7 +1,11 @@
 # Performance-test methodology
 
-V1.8.3-multipool-perf.8 is an unofficial local release candidate. It does
+V1.8.3-multipool-perf.9 is an unofficial local release candidate. It does
 not claim that one megahash per second has been achieved.
+
+Current experiment results and estimates are in `PERF9_RESULTS.md`. Compiler
+and pipeline sections below retain historical context; the new protected HW
+kernel is selected with per-function -O2, while the software engine stays -Os.
 
 ## What is validated on the host
 

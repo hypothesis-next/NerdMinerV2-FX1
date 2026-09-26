@@ -1,89 +1,78 @@
-# V1.8.3-multipool-perf.8 local performance-candidate notes
+# V1.8.3-multipool-perf.9 local performance candidate
 
-This is an unofficial NerdMiner_v2 performance and correctness test build. It
-is not an official or endorsed release of NerdMiner, BitMaker-hub, HeliosPool,
-or another pool operator.
+This is an unofficial modification of NerdMiner_v2, not an endorsed release
+of BitMaker-hub, NerdMiner, HeliosPool, or any pool operator.
 
-This is a locally validated performance candidate. It has not yet been flashed
-or validated on physical ESP32 hardware. It accumulates the earlier correctness,
-PoolStats stack, and Helios-specific TLS trust-anchor corrections.
+LOCAL VALIDATION ONLY. No physical board was accessed or flashed for this
+revision. No measured hashrate increase or hardware stability claim is made.
+Keep the preserved perf.8 release as the safe local comparison point.
 
-HeliosPool HTTPS uses the official self-signed GTS Root R4 certificate while
-Public Pool and compatible providers retain the general Mozilla CA bundle.
-Hostname and certificate validation remain enabled; there is no insecure or
-HTTP fallback. The statistics task now uses `pool.ntp.org` and does not attempt
-HTTPS until the system UTC clock is plausibly valid. Any NTP, TLS, API, or JSON
-failure remains isolated from Stratum mining.
+## Retained mining changes
 
-This revision increases the isolated PoolStats task stack from 10 KiB to 16 KiB
-after physical classic-ESP32 testing demonstrated a stack-canary panic in the
-mbedTLS entropy/TLS connection path. It also synchronizes the ESP32 system clock
-before verified HTTPS statistics requests. Mining and UI behavior are unchanged.
+- A small sequential classic-ESP32 SHA range kernel now runs in IRAM.
+- BUSY polling uses an inlined version of ESP-IDF 4.4.6's protected APB pre-read
+  workaround, with interrupt-level restoration and memory barriers intact.
+- Final idle polling and the exact-filter word read share a protected interval.
+- Integer-only nonce byte swapping no longer calls a library per nonce.
+- Input fills and control stores share a range-local SHA register-window base.
+- The HW kernel alone uses per-function -O2. Whole-firmware and SW flags stay -Os.
+- Candidate presence has its own boolean; nonce 0xFFFFFFFF is no longer
+  incorrectly interpreted as absence of a candidate.
 
-The release preserves the V1.8.3-multipool.1 UI and hybrid SW+HW architecture.
-It fixes exact block-target comparison, gives workers a full-width atomic job
-generation, snapshots the exact candidate header, corrects full 32-byte target
-endianness, and independently recomputes SHA-256d before every locally generated
-share submission. A stale or mismatched candidate is never submitted. Completed
-hash accounting now uses a synchronized 64-bit total snapshot.
+Each HW nonce still performs three compressions, two LOADs, 40 input stores
+and five idle checks. No SHA_TEXT write is allowed while the engine is active.
+The legacy unsupported overlap experiment is not enabled in the release.
+The software SHA engine is byte-for-byte unchanged from perf.8.
 
-Local release-candidate validation confirmed that the committed PEM is
-byte-identical to the official Google Trust Services root, that a desktop TLS
-client trusts the current Helios endpoint using only that root, and that an
-incorrect hostname is rejected. The live route returned its expected
-missing-address response. These desktop results do not prove the handshake on
-the older ESP32 mbedTLS stack; that remains part of the later combined hardware
-test.
+The independent reference SHA-256d submission gate, target comparison, full
+generation, stale protection and completed-work accounting are retained.
+Stratum serialization, wallet/reward behavior, UI, PoolStats, Helios TLS,
+certificates, NTP and configuration were not changed.
 
-Five million fixed-seed randomized headers passed differential host testing,
-including 73 exact early-filter passes. SHA-256d vectors include the Bitcoin
-genesis header and historical headers at heights 1, 100000, and 700000. This is
-a correctness result, not a physical ESP32 hashrate measurement.
+## Validation and experiments
 
-The perf.5 classic-ESP32 SHA text-register overlap is disabled by default. The
-installed ESP-IDF explicitly requires all SHA engines to be idle before
-SHA_TEXT is modified, and neither its HAL nor the hardware manual provides a
-safe input-latched point during BUSY. Sampled validation could not rule out a
-rare false-negative filter result. Perf.6 therefore uses the documented
-sequential path, overlaps only the CPU-local nonce byte swap, and waits for the
-final LOAD operation before reading the digest. The old experiment remains
-available only through an explicit development-build macro.
+See docs/PERF9_RESULTS.md for exact code sizes, stack frames, native tests,
+emitted-instruction model results and rejected experiment evidence.
 
-The only physical baseline is 340--350 kH/s combined. Source comments and
-target disassembly support approximately 35--45 kH/s for the software worker.
-Residual attribution suggests approximately 295--315 kH/s for the production
-hardware worker, but the firmware has no per-worker physical counters, so that
-split remains an estimate rather than a measurement.
+The emitted-Xtensa test is a strict host instruction/MMIO model, not an ESP32
+hardware emulator. SHA compression is supplied by an independent desktop SHA
+implementation; the model exercises the actual compiled CPU instructions,
+padding, nonce endian handling, filter branch, candidate storage, cancellation,
+range wrap and idle-before-write / protected-read contract.
+Its instruction counts are not physical cycle measurements.
 
-Perf.8 keeps every hardware access within the documented sequential contract.
-Repeated BUSY reads now use ESP-IDF's protected sequence-read API, and the
-SHA_TEXT fill code retains one register-window base instead of rematerializing
-about 37 absolute addresses per nonce. Target disassembly reduces
-`minerWorkerHw` from 1,123 to 1,079 bytes without changing its 256-byte frame,
-three compressions, two LOADs, 40 SHA_TEXT writes or five BUSY waits.
+Schedule-first and split-compression software trials passed five million
+deterministic cases each but increased stack pressure without convincing speed
+evidence. An equivalent-majority trial produced the same Xtensa hot function
+and was rejected. None of these trials remains in production source.
 
-The software job bake now precomputes the constant contributions to W18 and
-W19. The hot function remains fully unrolled with a 112-byte frame and shrinks
-from 15,955 to 15,908 bytes. A 16-word circular-schedule engine and an
-eight-round partial-unroll engine both passed five million differential cases
-but were rejected: they were respectively about 17% and 6.3% slower in the
-host comparison and increased the Xtensa frame to 192 and 368 bytes.
+## Performance expectation, not measurement
 
-Static analysis suggests only a modest gain over the measured 340--350 kH/s
-baseline. The realistic unmeasured band is approximately 350--365 kH/s, with
-340--380 kH/s used as a conservative-to-optimistic envelope. Reaching 700 kH/s
-with a roughly 40 kH/s software worker would require the hardware path to fit
-three compressions and all MMIO work into about 364 CPU cycles per nonce; the
-documented sequential interface does not support that expectation.
+The only physical baseline is the user's approximately 340 kH/s combined.
+The inferred split is about 40 kH/s SW plus 300 kH/s HW, not independently
+measured worker rates. The best engineering estimate is approximately 385 kH/s
+combined; realistic 370--400, conservative 340--365, optimistic about 420 kH/s.
+These are uncertain static estimates, not promised results or acceptance gates.
 
-Per-function `-O2` and `-O3` variants were rejected because they increased IRAM,
-stack frames and spills. Fixed affinity, two-software-worker, unsupported
-hardware-midstate restoration and hand-written assembly were not selected
-without physical evidence. This release does not claim 700, 800, or 1000 kH/s.
-Actual useful throughput and long-runtime stability require testing on
-ESP32_2432S028_2USB hardware.
+Removed calls partly overlap mandatory hardware latency, so instruction
+reduction cannot be converted directly into hashrate. There is no credible
+evidence for 700--800 kH/s from the retained architecture, nor proof that this
+candidate is the absolute hardware optimum.
 
-Use the factory image at offset `0x0000` for a clean development-device flash.
-Use the application image at `0x10000` only when the device already has the
-compatible classic-ESP32 bootloader and `huge_app.csv` partition table. Preserve
-the V1.8.3-multipool.1 factory image as rollback firmware.
+## Deferred hardware validation
+
+Measure unique completed work over long runs; accepted/rejected/stale shares;
+the actual SW/HW split; task stack high-water marks; minimum/free/largest heap;
+watchdog resets; Wi-Fi/Stratum responsiveness; and TLS/SHA-lock coexistence.
+Validate under rapid new jobs and API errors with normal active display use.
+Do not treat the host model as physical chip/errata validation.
+
+## Installation later
+
+Factory image: offset 0x0000. Included components: bootloader 0x1000, partition
+table 0x8000, boot_app0 0xE000, application 0x10000.
+Application-only image: offset 0x10000, only with an already compatible
+classic-ESP32 bootloader and huge_app.csv layout.
+No flashing is authorized by these notes. Preserve perf.8 and the known-good
+multipool.1 rollback artifacts. MIT licensing and upstream notices remain;
+the adapted DPORT workaround additionally retains its Apache 2.0 notices.
