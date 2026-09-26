@@ -23,6 +23,9 @@ void runMiner(void *name);
 
 void minerWorkerSw(void * task_id);
 void minerWorkerHw(void * task_id);
+#ifdef NERDMINER_SHA_DIAGNOSTICS
+void runClassicShaDiagnostics();
+#endif
 
 String printLocalTime(void);
 

@@ -22,8 +22,12 @@ static inline __attribute__((always_inline)) void waitIdle()
     const uint32_t apb = 0x3ff40078;
     const uint32_t status = SHA_256_BUSY_REG;
     // The same protected APB pre-read used by ESP-IDF, before EVERY DPORT
-    // read. No SHA input or state register is written while BUSY is set.
+    // read. MEMW completes the preceding START/CONTINUE/LOAD store before
+    // reading BUSY. A compiler memory clobber alone does not drain Xtensa's
+    // write buffer: without MEMW a fast IRAM poll can observe pre-command idle.
+    // No SHA input or state register is written while BUSY is set.
     __asm__ __volatile__(
+        "memw\n"
         "rsil %[ps], " XTSTR(CONFIG_ESP32_DPORT_DIS_INTERRUPT_LVL) "\n"
         "1: l32i %[scratch], %[apb], 0\n"
         "l32i %[busy], %[status], 0\n"
@@ -47,6 +51,7 @@ static inline __attribute__((always_inline)) uint32_t waitIdleAndReadFinalWord()
     const uint32_t status = SHA_256_BUSY_REG;
     const uint32_t digest = SHA_TEXT_BASE + 7 * sizeof(uint32_t);
     __asm__ __volatile__(
+        "memw\n"
         "rsil %[ps], " XTSTR(CONFIG_ESP32_DPORT_DIS_INTERRUPT_LVL) "\n"
         "1: l32i %[scratch], %[apb], 0\n"
         "l32i %[value], %[status], 0\n"

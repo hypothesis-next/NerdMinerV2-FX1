@@ -78,6 +78,10 @@ void setup()
   esp_task_wdt_init(WDT_MINER_TIMEOUT, true);
   // Idle task that would reset WDT never runs, because core 0 gets fully utilized
   disableCore0WDT();
+#ifdef NERDMINER_SHA_DIAGNOSTICS
+  runClassicShaDiagnostics();
+  for (;;) delay(1000);
+#endif
   //disableCore1WDT();
 
 #ifdef HW_SHA256_TEST

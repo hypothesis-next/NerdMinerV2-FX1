@@ -67,6 +67,7 @@ class Kernel:
             assert self.preread and (self.ps & 15) >= 5, 'unprotected DPORT read'
             self.preread = False
             if address == self.TEXT + 0x9c:
+                assert not self.command_needs_barrier, 'BUSY read before command MEMW barrier'
                 if self.busy:
                     self.busy -= 1
                     return 1
@@ -115,6 +116,7 @@ class Kernel:
             else:
                 raise AssertionError('wrong SHA operation order')
             self.busy = self.delay
+            self.command_needs_barrier = True
         else:
             self.memory[address] = value
 
@@ -131,6 +133,7 @@ class Kernel:
         self.text = [0] * 16
         self.busy = self.phase = self.writes = self.digest_reads = 0
         self.memory_locked = False
+        self.command_needs_barrier = False
         self.delay = delay
         self.preread = False
         self.ps = 0x40000 | initial_level
@@ -170,7 +173,8 @@ class Kernel:
                 pc, parent = call_stack.pop()
                 r[:] = parent
                 r[10:12] = returned
-            elif op in ('memw', 'rsync', 'nop'): pass
+            elif op == 'memw': self.command_needs_barrier = False
+            elif op in ('rsync', 'nop'): pass
             elif op == 'l32r': value = self.read(branch(a[1]))
             elif op == 'l32i': value = self.read(reg(a[1]) + int(a[2], 0))
             elif op == 's32i': self.write(reg(a[1]) + int(a[2], 0), reg(a[0]))

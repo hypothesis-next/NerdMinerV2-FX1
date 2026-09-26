@@ -1278,6 +1278,16 @@ void nerd_sha_control_write(uint32_t *words, uint32_t control_register)
                     (control_register - SHA_TEXT_BASE), 1);
 }
 
+#ifdef NERDMINER_SHA_DIAGNOSTICS
+static bool s_diag_force_digest = true;
+static uint32_t s_diag_checked = 0;
+static uint32_t s_diag_errors = 0;
+static uint32_t s_diag_hits = 0;
+static bool diagCheckNonce(const JobRequest *job, uint32_t nonce,
+                           const uint8_t hash[32], uint32_t final_word,
+                           bool passes_filter);
+#endif
+
 static void IRAM_ATTR __attribute__((noinline, optimize("O2")))
 runClassicHardwareSequential(const JobRequest *job,
                                          JobResult *result,
@@ -1313,8 +1323,20 @@ runClassicHardwareSequential(const JobRequest *job,
     nerd_sha_hal_wait_idle();
     nerd_sha_control_write(words, SHA_256_LOAD_REG);
     const uint32_t final_word = classic_sha::waitIdleAndReadFinalWord();
-    const bool passes_filter = nerd_sha_ll_read_digest_swap_from_word(hash, false, final_word);
+    const bool passes_filter = nerd_sha_ll_read_digest_swap_from_word(hash,
+#ifdef NERDMINER_SHA_DIAGNOSTICS
+      s_diag_force_digest,
+#else
+      false,
+#endif
+      final_word);
     esp_sha_unlock_memory_block();
+#ifdef NERDMINER_SHA_DIAGNOSTICS
+    if (!diagCheckNonce(job, nonce, hash, final_word, passes_filter)) {
+      result->nonce_count = offset + 1;
+      break;
+    }
+#endif
     if (passes_filter) {
       recordHardwareCandidate(result, job, nonce, hash);
       if (result->has_candidate) {
@@ -1403,6 +1425,10 @@ runClassicHardwarePipelined(const JobRequest *job,
 #endif
 
 }  // namespace
+
+#ifdef NERDMINER_SHA_DIAGNOSTICS
+#include "crypto/ClassicShaDiagnostics.h"
+#endif
 
 // TLS may own the SHA-256 engine across network waits. Never wait on that
 // engine: finish the already allocated range with the proven software engine.
