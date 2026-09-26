@@ -31,6 +31,7 @@ class Kernel:
                 self.sections.append((s[3], s[4], s[5]))
         nm = output([str(toolchain / 'xtensa-esp32-elf-nm.exe'), '-S', '-C', str(elf)])
         self.names = {}
+        helper_ranges = []
         for line in nm.splitlines():
             parts = line.split(maxsplit=3)
             if len(parts) == 3 and re.fullmatch('[0-9a-f]+', parts[0]):
@@ -42,9 +43,14 @@ class Kernel:
                     self.size = int(parts[1], 16)
                 if 's_working_generation' in parts[3]:
                     self.generation = int(parts[0], 16)
+                if 'recordHardwareCandidate(' in parts[3]:
+                    helper_ranges.append((int(parts[0], 16), int(parts[1], 16)))
         listing = output([str(toolchain / 'xtensa-esp32-elf-objdump.exe'), '-d', '-C',
                           f'--start-address={self.start}',
                           f'--stop-address={self.start + self.size}', str(elf)])
+        for address, size in helper_ranges:
+            listing += output([str(toolchain / 'xtensa-esp32-elf-objdump.exe'), '-d', '-C',
+                               f'--start-address={address}', f'--stop-address={address + size}', str(elf)])
         self.code = {}
         for line in listing.splitlines():
             m = re.match(r'^\s*([0-9a-f]+):\s+([0-9a-f]+)\s+(\S+)\s*(.*)', line)
@@ -66,6 +72,7 @@ class Kernel:
                     return 1
                 return 0
             assert not self.busy, 'digest read before idle'
+            assert self.memory_locked, 'digest read without shared-memory lock'
             self.digest_reads += 1
             return self.text[(address - self.TEXT) // 4]
         if address in self.memory:
@@ -80,6 +87,7 @@ class Kernel:
     def write(self, address, value):
         value &= 0xffffffff
         if self.TEXT <= address < self.TEXT + 64:
+            assert self.memory_locked, 'SHA_TEXT access without shared-memory lock'
             assert not self.busy, 'SHA_TEXT written while BUSY'
             self.text[(address - self.TEXT) // 4] = value
             self.writes += 1
@@ -122,6 +130,7 @@ class Kernel:
         self.memory = {self.generation: 19}
         self.text = [0] * 16
         self.busy = self.phase = self.writes = self.digest_reads = 0
+        self.memory_locked = False
         self.delay = delay
         self.preread = False
         self.ps = 0x40000 | initial_level
@@ -135,12 +144,14 @@ class Kernel:
         self.memory[r[2]] = 19
         self.memory[r[2] + 4] = int.from_bytes(header[76:80], 'little')
         self.memory[r[2] + 8] = nonces
+        self.memory[r[2] + 16] = self.memory[r[2] + 20] = 0  # Job-owned threshold: 0.0.
         self.memory[r[3] + 16] = self.memory[r[3] + 20] = 0
         self.memory[r[3] + 136] = 0
         for i in range(20):
             self.memory[r[4] + 4*i] = int.from_bytes(header[4*i:4*i+4], 'big')
             self.memory[r[2] + 252 + 4*i] = int.from_bytes(header[4*i:4*i+4], 'little')
         pc, instructions = self.start, 0
+        call_stack = []
         def reg(arg):
             return r[int(arg[1:])]
         def branch(arg):
@@ -152,7 +163,13 @@ class Kernel:
             assert instructions < 10000 * nonces, 'kernel failed to terminate'
             value = None
             if op == 'entry': r[1] -= int(a[1], 0)
-            elif op == 'retw': break
+            elif op == 'retw':
+                if not call_stack:
+                    break
+                returned = r[2:4]
+                pc, parent = call_stack.pop()
+                r[:] = parent
+                r[10:12] = returned
             elif op in ('memw', 'rsync', 'nop'): pass
             elif op == 'l32r': value = self.read(branch(a[1]))
             elif op == 'l32i': value = self.read(reg(a[1]) + int(a[2], 0))
@@ -177,6 +194,9 @@ class Kernel:
             elif op == 'blti':
                 signed = reg(a[0]) if reg(a[0]) < 0x80000000 else reg(a[0]) - 0x100000000
                 if signed < int(a[1], 0): pc = branch(a[2])
+            elif op == 'bgei':
+                signed = reg(a[0]) if reg(a[0]) < 0x80000000 else reg(a[0]) - 0x100000000
+                if signed >= int(a[1], 0): pc = branch(a[2])
             elif op in ('bltu', 'bgeu', 'bne', 'beq'):
                 if op == 'bltu': take = reg(a[0]) < reg(a[1])
                 elif op == 'bgeu': take = reg(a[0]) >= reg(a[1])
@@ -187,7 +207,12 @@ class Kernel:
             elif op in ('call8', 'callx8'):
                 target = branch(a[0]) if op == 'call8' else reg(a[0])
                 name = self.names[target]
-                if name == '__bswapsi2':
+                if name.startswith('(anonymous namespace)::recordHardwareCandidate('):
+                    parent = r.copy()
+                    call_stack.append((pc, parent))
+                    r[:] = [0, parent[1]] + parent[10:16] + [0] * 8
+                    pc = target
+                elif name == '__bswapsi2':
                     r[10] = int.from_bytes(r[10].to_bytes(4, 'little'), 'big')
                 elif name == 'esp_dport_access_sequence_reg_read':
                     self.preread = True
@@ -201,7 +226,19 @@ class Kernel:
                     # Exercise storage/ownership, not floating-point difficulty
                     # arithmetic (the native suite validates the target gate).
                     r[10], r[11] = 0, 0x3ff00000  # 1.0 > initial 0.0
-                elif name == '__gtdf2': r[10] = 1
+                elif name in ('__gtdf2', '__gedf2', '__ledf2', '__ltdf2'):
+                    left = struct.unpack('<d', struct.pack('<II', r[10], r[11]))[0]
+                    right = struct.unpack('<d', struct.pack('<II', r[12], r[13]))[0]
+                    r[10] = ((left > right) - (left < right)) & 0xffffffff
+                elif name == 'esp_sha_lock_memory_block':
+                    assert not self.memory_locked
+                    self.memory_locked, self.memory_ps = True, self.ps
+                    self.ps = (self.ps & ~15) | 5
+                elif name == 'esp_sha_unlock_memory_block':
+                    assert self.memory_locked and not self.busy
+                    self.memory_locked, self.ps = False, self.memory_ps
+                elif name == 'sha_hal_wait_idle':
+                    assert self.memory_locked and not self.busy
                 elif name.startswith('isSha256Valid('): r[10] = int(any(self.digest))
                 elif name == 'memcpy':
                     data = [self.read_byte(r[11] + i) for i in range(r[12])]
@@ -210,6 +247,11 @@ class Kernel:
             else: raise AssertionError(f'unsupported instruction {op} {a}')
             if value is not None: r[int(a[0][1:])] = value & 0xffffffff
         expected_count = nonces if cancel_after is None else min(nonces, ((cancel_after + 255) // 256) * 256 + 1)
+        for i in range(expected_count):
+            candidate_header = header[:76] + ((int.from_bytes(header[76:80], 'little') + i) & 0xffffffff).to_bytes(4, 'little')
+            if hashlib.sha256(hashlib.sha256(candidate_header).digest()).digest()[-2:] == b'\0\0':
+                expected_count = i + 1
+                break
         assert len(self.completed) == expected_count
         hits = []
         start_nonce = int.from_bytes(header[76:80], 'little')
@@ -220,6 +262,7 @@ class Kernel:
             if expected[-2:] == b'\0\0': hits.append(expected_header)
         assert self.controls == [0x90, 0x94, 0x98, 0x90, 0x98] * expected_count
         assert self.writes == 40 * expected_count and self.ps == initial_ps
+        assert not self.memory_locked
         hit = bool(hits)
         assert self.digest_reads == expected_count + 7 * len(hits), 'wrong filter branch'
         assert self.memory[0x20001000 + 8] == expected_count, 'wrong completed-nonce count'
@@ -264,6 +307,18 @@ def main():
         header = bytes(76) + (0xfffff000).to_bytes(4, 'little')
         count_instructions, _ = kernel.run(header, 2, 0, count, cancel_after)
         print(f'SIMULATED range: requested={count}, cancel_after={cancel_after}, completed={len(kernel.completed)}, instructions={count_instructions}')
+    # A known real Bitcoin hit inside a range must terminate only its prefix;
+    # the next invocation must resume the suffix without losing/counting twice.
+    original = headers[0]
+    start = (int.from_bytes(original[76:80], 'little') - 1) & 0xffffffff
+    done = 0
+    while done < 32:
+        header = original[:76] + ((start + done) & 0xffffffff).to_bytes(4, 'little')
+        _, hit = kernel.run(header, 2, 0, 32 - done)
+        if done == 0: assert hit and len(kernel.completed) == 2
+        done += len(kernel.completed)
+    assert done == 32
+    print('SIMULATED candidate prefix/suffix: 32 unique nonces, actual historical hit retained.')
     print(f'SIMULATED emitted Xtensa kernel: {len(headers)} headers, {hits} full-digest hits, zero mismatches.')
     print('40 writes / 3 compressions / 2 LOADs; idle-before-write and APB/interrupt protection passed.')
     print(f'Instructions exercised: {total}; no hardware cycle/throughput claim.')

@@ -1,5 +1,23 @@
 # Changelog
 
+## V1.8.3-multipool-perf.9-audit.1 - local regression gate corrections
+
+- Keeps job precomputation buffers alive across coordinator iterations.
+- Stops ranges at each qualifying candidate and resumes their exact suffix;
+  preserves results with bounded backpressure rather than dropping a full queue.
+- Snapshots network target and pool difficulty; preserves valid block candidates
+  regardless of pool difficulty changes, including equality boundaries.
+- Accounts queued completed work on stop/disconnect and synchronizes generation
+  transitions with queue clearing. Emits exactly eight nonce hex digits.
+- Initializes absent NVS share/block values. Physical validation remains deferred.
+- Protects the shared SHA_TEXT window against other SHA algorithms with the SDK
+  memory lock for one nonce, plus the all-engine idle wait. Never holds this
+  critical section while waiting for result-queue space or validating candidates.
+- Uses nonblocking SHA engine acquisition; when TLS owns SHA-256, hashes the
+  allocated range with the existing software engine rather than blocking mining.
+- Uses full reference hashing for unusually easy jobs outside the exact fixed
+  16-zero-bit filter domain; retains normal optimized Bitcoin mining.
+
 ## V1.8.3-multipool-perf.9 - local protected-HW performance candidate
 
 - Moves the classic-ESP32 sequential SHA range kernel into IRAM.

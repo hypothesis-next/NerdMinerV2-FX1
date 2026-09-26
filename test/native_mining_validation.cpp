@@ -5,6 +5,7 @@
 #include <chrono>
 
 #include "../src/crypto/ReferenceSha256.h"
+#include "../src/crypto/MiningRangePolicy.h"
 #include "../src/ShaTests/nerdSHA256plus.h"
 
 namespace {
@@ -164,6 +165,48 @@ void testGenerationAndRanges() {
   }
 }
 
+void testCandidateRangeResume() {
+  uint8_t filterTarget[32] = {};
+  require(!mining_validation::requiresFullDigest(1.0 / 65536.0, filterTarget), "filter threshold");
+  require(mining_validation::requiresFullDigest(1e-6, filterTarget), "easy share bypasses filter");
+  filterTarget[30] = 1;
+  require(mining_validation::requiresFullDigest(1, filterTarget), "easy network target bypasses filter");
+  require(mining_validation::candidateEligible(true, 1, 100), "network block suppressed by pool target");
+  require(mining_validation::candidateEligible(false, 1, 1), "equal pool difficulty rejected");
+  require(!mining_validation::candidateEligible(false, 1, 2), "under-difficulty share accepted");
+  uint32_t millions = 7, remainder = 999999;
+  uint64_t expected = 7999999;
+  const uint32_t counts[] = {16384U, 4096U, 0xffffffffU};
+  for (uint32_t count : counts) {
+    expected += count;
+    mining_validation::accumulateCompleted(millions, remainder, count);
+    require(static_cast<uint64_t>(millions) * 1000000 + remainder == expected,
+            "completed-work carry/overflow");
+  }
+  struct Range { uint32_t generation, nonce_start, nonce_count; };
+  const uint32_t starts[] = {0U, 0xfffffff0U, 0xffffffffU};
+  for (uint32_t start : starts) {
+    Range job{42, start, 4096};
+    uint32_t completed = 0;
+    while (job.nonce_count > 0) {
+      require(job.nonce_start == start + completed, "candidate resume gap/overlap");
+      const uint32_t prefix = job.nonce_count > 7 ? 7 : job.nonce_count;
+      completed += prefix;
+      if (!mining_validation::resumeCompletedPrefix(job, prefix, 42)) break;
+    }
+    require(completed == 4096, "candidate resume dropped suffix");
+    require(!mining_validation::resumeCompletedPrefix(job, 1, 43), "stale suffix resumed");
+    require(!mining_validation::resumeCompletedPrefix(job, 0, 42), "zero work resumed");
+  }
+  char text[9];
+  mining_validation::formatSubmitNonce(text, 0);
+  require(strcmp(text, "00000000") == 0, "zero nonce submission width");
+  mining_validation::formatSubmitNonce(text, 1);
+  require(strcmp(text, "00000001") == 0, "low nonce submission width");
+  mining_validation::formatSubmitNonce(text, 0xffffffffU);
+  require(strcmp(text, "ffffffff") == 0, "maximum nonce submission width");
+}
+
 uint64_t nextRandom(uint64_t &state) {
   state ^= state >> 12; state ^= state << 25; state ^= state >> 27;
   return state * 0x2545f4914f6cdd1dULL;
@@ -219,6 +262,7 @@ int main(int argc, char **argv) {
   testCandidateValidation();
   testForcedCandidateGate();
   testGenerationAndRanges();
+  testCandidateRangeResume();
   testOptimizedDifferential(cases);
   if (argc == 3 && strcmp(argv[2], "--bench") == 0) benchmarkOptimized(cases);
   puts("All mining validation tests passed.");

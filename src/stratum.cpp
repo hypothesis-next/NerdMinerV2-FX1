@@ -9,6 +9,7 @@
 #include "lwip/sockets.h"
 #include "utils.h"
 #include "version.h"
+#include "crypto/MiningRangePolicy.h"
 
 
 
@@ -208,6 +209,8 @@ bool parse_mining_notify(String line, mining_job& mJob)
 bool tx_mining_submit(WiFiClient& client, mining_subscribe mWorker, mining_job mJob, unsigned long nonce, unsigned long &submit_id)
 {
     char payload[BUFFER] = {0};
+    char nonceText[9];
+    mining_validation::formatSubmitNonce(nonceText, static_cast<uint32_t>(nonce));
 
     // Submit
     id = getNextId(id);
@@ -218,13 +221,13 @@ bool tx_mining_submit(WiFiClient& client, mining_subscribe mWorker, mining_job m
         mJob.job_id.c_str(),
         mWorker.extranonce2.c_str(),
         mJob.ntime.c_str(),
-        String(nonce, HEX).c_str()
+        nonceText
         );
     Serial.print("  Sending  : "); Serial.print(payload);
-    client.print(payload);
+    const size_t written = client.print(payload);
     //Serial.print("  Receiving: "); Serial.println(client.readStringUntil('\n'));
 
-    return true;
+    return written == strlen(payload);
 }
 
 bool parse_mining_set_difficulty(String line, double& difficulty)
