@@ -46,8 +46,14 @@ public:
     return getPointer();
   }
   void deleteSprite() {} // Retain capacity; each create resets logical geometry.
+  void releaseCapacity() { TFT_eSprite::deleteSprite(); }
+  bool ensureCapacity() {
+    return TFT_eSprite::created() || TFT_eSprite::createSprite(125, 163) != nullptr;
+  }
 };
 ReusableScreenSprite background(&tft);
+void releaseCydScreenScratch() { background.releaseCapacity(); }
+bool restoreCydScreenScratch() { return background.ensureCapacity(); }
 SPIClass hSPI(HSPI);
 TFT_eTouch<TFT_eSPI> touch(tft, ETOUCH_CS, 0xFF, hSPI); 
 

@@ -9,6 +9,8 @@
 #include "PoolRegistry.h"
 #include "PoolStatsPolicy.h"
 #include "PoolStatsProvider.h"
+#include "../drivers/displays/display.h"
+#include "../crypto/ShaResourcePolicy.h"
 
 namespace {
 
@@ -16,7 +18,9 @@ constexpr uint32_t WIFI_RECHECK_MS = 5UL * 1000UL;
 constexpr uint32_t CLOCK_RECHECK_MS = 5UL * 1000UL;
 constexpr const char *NTP_SERVER = "pool.ntp.org";
 constexpr uint32_t MIN_FREE_HEAP = 45000;
-constexpr uint32_t MIN_LARGEST_HEAP_BLOCK = 24000;
+// Two TLS record buffers must fit before the handshake's smaller allocations.
+// A measured 32 KiB largest block was insufficient despite 60 KiB total free.
+constexpr uint32_t MIN_LARGEST_HEAP_BLOCK = 36000;
 // TLS setup in WiFiClientSecure exceeds 10 KiB on classic ESP32. Keep the
 // network-only statistics task isolated from mining with a bounded 16 KiB stack.
 constexpr uint32_t SERVICE_TASK_STACK = 16384;
@@ -66,12 +70,25 @@ void refreshStats(uint32_t now) {
   current.lastAttemptMs = now;
   publishSnapshot(current);
 
+  // Release only reusable rendering scratch, never configuration or job data.
+  // Cold TLS setup borrows scratch only until the verified HTTP headers arrive.
+  // The provider releases the window then; this guard handles early errors.
+  struct DisplayMemoryWindow {
+    explicit DisplayMemoryWindow(bool enabled) : enabled(enabled) {
+      if (enabled) beginStatsDisplayMemoryWindow();
+    }
+    ~DisplayMemoryWindow() { if (enabled) endStatsDisplayMemoryWindow(); }
+    bool enabled;
+  } displayMemoryWindow(!poolStatsHasReusableTransport());
+
   const uint32_t heapCaps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
   const uint32_t freeBytes = heap_caps_get_free_size(heapCaps);
   const uint32_t largestBlock = heap_caps_get_largest_free_block(heapCaps);
   Serial.printf("[PoolStats] byte heap free=%u max=%u min=%u\n", freeBytes,
     largestBlock, heap_caps_get_minimum_free_size(heapCaps));
-  if (freeBytes < MIN_FREE_HEAP || largestBlock < MIN_LARGEST_HEAP_BLOCK) {
+  const uint32_t requiredFree = displayMemoryWindow.enabled ? MIN_FREE_HEAP : 24000;
+  const uint32_t requiredBlock = displayMemoryWindow.enabled ? MIN_LARGEST_HEAP_BLOCK : 8192;
+  if (freeBytes < requiredFree || largestBlock < requiredBlock) {
     Serial.printf("[PoolStats] memory gate heap=%u max=%u\n", freeBytes, largestBlock);
     const PoolUpdateDecision decision = updatePoolSnapshotAfterFetch(
         getPoolStatsSnapshot(), current,
@@ -82,10 +99,20 @@ void refreshStats(uint32_t now) {
   }
 
   PoolStatsSnapshot candidate = current;
+  const uint32_t fallbackUs = shaFallbackMicroseconds().load(std::memory_order_relaxed);
+  const uint32_t fallbackNonces = shaFallbackNonces().load(std::memory_order_relaxed);
+  const uint32_t cpuWindowUs = shaCpuWindowMicroseconds().load(std::memory_order_relaxed);
+  const uint32_t handshakeWindowUs = shaHandshakeWindowMicroseconds().load(std::memory_order_relaxed);
   const PoolFetchResult result =
       provider->fetch(identity, candidate, lastModified, sizeof(lastModified));
+  Serial.printf("[PoolStats] hardware fallback us=%u nonces=%u\n",
+    shaFallbackMicroseconds().load(std::memory_order_relaxed) - fallbackUs,
+    shaFallbackNonces().load(std::memory_order_relaxed) - fallbackNonces);
   Serial.printf("[PoolStats] fetch result=%u HTTP=%d hasData=%u\n",
     static_cast<unsigned>(result.status), result.httpStatus, candidate.hasData);
+  Serial.printf("[PoolStats] idle CPU windows us=%u handshakeUs=%u\n",
+    shaCpuWindowMicroseconds().load(std::memory_order_relaxed) - cpuWindowUs,
+    shaHandshakeWindowMicroseconds().load(std::memory_order_relaxed) - handshakeWindowUs);
   if (result.status == PoolFetchStatus::Success) {
     Serial.printf("[PoolStats] verified snapshot best=%s workers=%s rate=%s\n",
       candidate.bestDifficulty, candidate.workersCount, candidate.totalHashRate);

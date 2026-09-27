@@ -10,6 +10,8 @@
 #include "poolstats/PoolRegistry.h"
 #include "poolstats/PoolStatsParsers.h"
 #include "poolstats/PoolStatsPolicy.h"
+#include "poolstats/HeliosUserPrefix.h"
+#include "poolstats/HeliosUserCapture.h"
 
 namespace {
 
@@ -261,6 +263,39 @@ int main(int argc, char **argv) {
     return 2;
   }
   testRegistry();
+  uint8_t captured[2048];
+  const std::string userPrefix = "{\"user\":{\"note\":\"escaped \\\" } \\\\ text\",\"stats\":[{}],\"workers\":[]}";
+  const std::string response = userPrefix + ",\"history\":[" + std::string(100000, '0') + "]}";
+  HeliosUserCapture capture(captured, sizeof(captured), 110000);
+  bool consumed = true;
+  for (unsigned char value : response) consumed = capture.consume(value) && consumed;
+  check(consumed && capture.complete() && capture.size() == userPrefix.size(),
+        "capture only first user object with escaped strings and nested arrays");
+  check(capture.bodyBytes() == response.size(), "fully drain history without retaining it");
+  HeliosUserCapture overflow(captured, 4, 110000);
+  bool overflowed = false;
+  for (unsigned char value : userPrefix) if (!overflow.consume(value)) { overflowed = true; break; }
+  check(overflowed, "bounded user-prefix allocation");
+  HeliosUserCapture bodyLimit(captured, sizeof(captured), 4);
+  bool bodyRejected = false;
+  for (unsigned char value : userPrefix) if (!bodyLimit.consume(value)) { bodyRejected = true; break; }
+  check(bodyRejected, "bounded drained HTTP body");
+  for (const char *text : {"{\"user\":", " { \"user\" : "}) {
+    std::istringstream stream(text);
+    check(enterHeliosUserObject([&stream]() { return stream.get(); }),
+          "current Helios user framing");
+  }
+  for (const char *text : {"", "{\"user", "{\"users\":", "{\"historicalStats\":", "[\"user\":", "{\"user\", "}) {
+    std::istringstream stream(text);
+    check(!enterHeliosUserObject([&stream]() { return stream.get(); }),
+          "reject truncated/wrong Helios framing");
+  }
+  std::istringstream wrapped("{\"user\":" + readFixture(argv[1], "helios_snapshot.json") +
+                           ",\"historicalStats\":[" + std::string(100000, '0') + "]}");
+  check(enterHeliosUserObject([&wrapped]() { return wrapped.get(); }), "enter wrapped live-schema object");
+  DynamicJsonDocument compact(4096);
+  check(!deserializeJson(compact, wrapped), "parse only compact user");
+  check(wrapped.tellg() < 2000, "history was not downloaded/parsed");
   testParsers(argv[1]);
   testPolicy();
   if (failures != 0) {

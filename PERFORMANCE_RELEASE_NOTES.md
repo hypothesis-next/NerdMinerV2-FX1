@@ -1,4 +1,30 @@
-# V1.8.3-multipool-perf.10-audit.1 hardware-test candidate
+# V1.8.3-multipool-perf.11-rc.1 hardware-test candidate
+
+Unofficial NerdMiner_v2 modification; no upstream or pool endorsement.
+This candidate updates Helios to `/api/users/<address>` and keeps authenticated
+HTTPS open across bounded, completion-based refreshes. It uses the official
+software SHA ALT mode only for statistics-task TLS contexts, with bounded CPU
+windows outside the documented hardware miner's protected SHA/DPORT intervals.
+No hashing/target/ownership/submission validation is weakened.
+
+The target consistently builds matching official TLS runtime sources with the
+supported 1024-byte outgoing-record limit; incoming records remain 16 KiB.
+ISRG Root X2, hostname verification, valid-UTC gating, cache and backoff remain.
+Other providers keep the generic trust bundle; unknown hosts make no API request.
+
+The protected digest kernel passed 2,979,747 physical comparisons without a
+mismatch and five million host differential cases. Bulk-read and no-CPU-window
+variants were rejected after measured throughput/watchdog regressions. Exact
+final-binary throughput, refresh minima, shares and heap measurements belong to
+the accompanying hardware validation report. See `docs/HELIOS_REFRESH_FIX.md`.
+
+Use a verified application-only update to preserve an existing configuration.
+The factory image and manifest are fresh-install options, not preserving updates.
+The upstream MIT license and bundled TLS runtime Apache 2.0 notices are retained.
+Multi-hour/multi-day validation remains pending; initial or reconnected full TLS
+handshakes still cost CPU time and briefly retain the last complete LCD frame.
+
+## Historical perf.10-audit.1 candidate notes
 
 Unofficial NerdMiner_v2 modification; no upstream or pool-operator endorsement.
 

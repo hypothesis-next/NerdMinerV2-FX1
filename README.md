@@ -6,20 +6,20 @@
 
 This fork preserves the V1.8.3 Stratum mining implementation and replaces the
 pool dashboard's fixed Public Pool behavior with a provider-based statistics
-layer. The current hardware-test candidate is **V1.8.3-multipool-perf.10-audit.1**; the
+layer. The current hardware-test candidate is **V1.8.3-multipool-perf.11-rc.1**; the
 previous **V1.8.3-multipool.1** release remains the rollback baseline.
 
-The perf.10 mining implementation measured 409.09 kH/s over 1,198.891 seconds
-after warm-up on one ESP32_2432S028_2USB, with 381 accepted submissions and no
-validation failures. The audit.1 rebuild additionally removes private framework
-paths from diagnostics. Consult the bundled hardware-test report for validation
-of the exact released binary; this is not a guarantee for every board or network.
+This candidate fixes the deployed Helios API route and secure-TLS/mining resource
+interaction. See [Helios refresh diagnosis](docs/HELIOS_REFRESH_FIX.md) and the
+bundled hardware-test report for exact-binary measurements. Single-board results
+are not a guarantee for every board/network or proof of multi-day stability.
 
 Key behavior:
 
 - `public-pool.io`, `pool.nerdminers.org`, `pool.sethforprivacy.com`, and
   `pool.solomining.de` keep their compatible remote statistics integrations.
-- `btc.heliospool.com` uses HeliosPool's compact user snapshot endpoint.
+- `btc.heliospool.com` uses the deployed user route, extracting compact user
+  metrics and discarding bounded historical data while retaining verified HTTPS.
 - Unknown Stratum hosts continue mining, display their normalized hostname,
   make no dashboard API request, and show `N/A` for remote-only metrics.
 - Statistics requests run in a separate low-priority task with bounded
@@ -33,14 +33,15 @@ See [multi-pool architecture](docs/MULTIPOOL_ARCHITECTURE.md),
 ## Flashing this fork on ESP32_2432S028_2USB
 
 For a complete first installation, flash
-`NerdMinerV2-V1.8.3-multipool-perf.8-ESP32_2432S028_2USB-factory.bin` at address
+`NerdMinerV2-V1.8.3-multipool-perf.11-rc.1-ESP32_2432S028_2USB-factory.bin` at address
 `0x0000`. For an application-only update on a board that already has a
 compatible bootloader and partition table, flash
-`NerdMinerV2-V1.8.3-multipool-perf.8-ESP32_2432S028_2USB-firmware.bin` at
+`NerdMinerV2-V1.8.3-multipool-perf.11-rc.1-ESP32_2432S028_2USB-firmware.bin` at
 `0x10000`.
 
-Use the factory image for the first test device. Back up configuration details
-before flashing and select only the `ESP32_2432S028_2USB` artifact.
+Back up the complete flash first and verify the actual application partition.
+Use application-only flashing on a compatible configured board; do not erase
+NVS/SPIFFS or use the factory/web-flasher image to preserve user configuration.
 
 This local test release adds an independent candidate SHA-256d validator, exact
 network-target comparison, full-width job generations, and safer long-running
@@ -48,7 +49,7 @@ hash accounting. The perf.5 hardware-SHA register-overlap experiment remains
 available only behind an explicit development build macro; it is disabled in
 this candidate because ESP-IDF requires SHA_TEXT to remain untouched while the
 engine is busy. The default classic-ESP32 worker uses the documented sequential
-peripheral contract. Throughput still requires physical-board validation.
+peripheral contract. Consult the exact binary's physical validation report.
 See [performance methodology](docs/PERFORMANCE_TESTING.md).
 
 ---

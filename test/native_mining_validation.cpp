@@ -186,12 +186,12 @@ void testCandidateRangeResume() {
   }
   struct Range { uint32_t generation, nonce_start, nonce_count; };
   const uint32_t starts[] = {0U, 0xfffffff0U, 0xffffffffU};
-  for (uint32_t start : starts) {
+  for (uint32_t prefixLimit : {7U, 64U}) for (uint32_t start : starts) {
     Range job{42, start, 4096};
     uint32_t completed = 0;
     while (job.nonce_count > 0) {
       require(job.nonce_start == start + completed, "candidate resume gap/overlap");
-      const uint32_t prefix = job.nonce_count > 7 ? 7 : job.nonce_count;
+      const uint32_t prefix = job.nonce_count > prefixLimit ? prefixLimit : job.nonce_count;
       completed += prefix;
       if (!mining_validation::resumeCompletedPrefix(job, prefix, 42)) break;
     }
@@ -273,6 +273,19 @@ int main(int argc, char **argv) {
   try { SecureTransportWork secure(true); throw 1; }
   catch (int) {}
   require(!secureTransportActive(), "error cleanup restores hardware eligibility");
+  require(!secureTransportCpuActive() && !secureTransportHandshakeActive(), "TLS CPU ownership initially idle");
+  {
+    SecureTransportCpuWork records(true);
+    require(secureTransportCpuActive() && !secureTransportHandshakeActive(), "record I/O selects light CPU window");
+    {
+      SecureTransportCpuWork handshake(true, true);
+      require(secureTransportHandshakeActive(), "handshake selects intensive CPU window");
+    }
+    require(secureTransportCpuActive() && !secureTransportHandshakeActive(), "nested handshake cleanup preserves record owner");
+  }
+  try { SecureTransportCpuWork handshake(true, true); throw 1; }
+  catch (int) {}
+  require(!secureTransportCpuActive() && !secureTransportHandshakeActive(), "TLS CPU ownership restored on error");
   uint32_t cases = argc >= 2 ? static_cast<uint32_t>(strtoul(argv[1], nullptr, 10)) : 2000000;
   testReferenceVectors();
   testTargetComparison();

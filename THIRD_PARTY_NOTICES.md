@@ -1,5 +1,11 @@
 # Third-party notices
 
+The unmodified TLS runtime files in `vendor/mbedtls-tls` are from Espressif's
+mbedTLS 2.28.4 submodule, commit `1d7033af30e20ccb2a0c0a114d3a08e372430f34`,
+selected by ESP-IDF v4.4.6. See that directory's `ORIGIN.md` for provenance and
+its original Apache 2.0 `LICENSE`. This source inclusion is not a framework
+security upgrade; original copyright notices remain intact.
+
 The protected classic-ESP32 DPORT access in
 `src/crypto/ClassicEsp32ShaAccess.h` is derived from ESP-IDF v4.4.6
 `components/esp_hw_support/port/esp32/dport_access.c`:

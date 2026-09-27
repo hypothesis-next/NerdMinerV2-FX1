@@ -13,5 +13,8 @@ class PoolStatsProvider {
 };
 
 PoolStatsProvider *providerFor(PoolProviderKind provider);
+// Statistics-task-only: prepare a warm request without allowing a surprise
+// cold handshake while the display still owns its rendering allocation.
+bool poolStatsHasReusableTransport();
 
 #endif

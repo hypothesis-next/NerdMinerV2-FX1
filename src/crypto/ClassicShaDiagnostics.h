@@ -84,6 +84,9 @@ void runClassicShaDiagnostics()
     Serial.println("SHA DIAG concurrent task unavailable");
     return;
   }
+  for (unsigned mode=0; mode<3 && !s_diag_errors; ++mode) {
+  SecureTransportCpuWork cpuWork(mode != 0, mode == 2);
+  Serial.printf("SHA DIAG access mode=%u (0=normal, 1=record I/O, 2=handshake CPU window)\n", mode);
   for (unsigned h=0; h<3 && !s_diag_errors; ++h) {
     JobRequest job{}; job.generation=s_working_generation.load(); job.difficulty=1e100;
     for (unsigned i=0; i<80; ++i) { char pair[3]={headers[h][i*2],headers[h][i*2+1],0};
@@ -122,6 +125,7 @@ void runClassicShaDiagnostics()
     Serial.printf("SHA DIAG filter header=%u completed=%u checked=%u hits=%u errors=%u\n",
       h,completed,s_diag_checked,s_diag_hits,s_diag_errors);
     s_diag_burst=false;
+  }
   }
   releaseClassicSha();
   s_diag_other_stop.store(true);

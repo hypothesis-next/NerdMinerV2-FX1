@@ -1,5 +1,31 @@
 # Changelog
 
+## V1.8.3-multipool-perf.11-rc.1 - Helios refresh / mining coexistence candidate
+
+- Uses the deployed Helios `/api/users/<address>` route and captures only the
+  compact `user` object while draining bounded HTTP framing for keep-alive.
+  The previous query-parameter snapshot route now returns HTTP 400.
+- Keeps verified TLS connections across refreshes. Uses the SDK's complete
+  software SHA mode only for the statistics task's TLS contexts; mining retains
+  its documented, MEMW-protected hardware path and independent validation.
+- Offers bounded other-core CPU windows outside SHA/DPORT critical sections,
+  during TLS work. Reports fallback/window time
+  separately from exact completed-nonce telemetry; counters are not inflated.
+- Avoids retaining a duplicate session/certificate tree while a socket is open.
+  Rejects bulk-read/no-window variants after refresh throughput and watchdog
+  regressions on the physical board; retains the stable transfer path.
+- Builds matching, unmodified official mbedTLS 2.28.4 TLS runtime sources with
+  a supported 1024-byte outgoing-record limit. Incoming records remain 16 KiB,
+  hostname/CA verification remains mandatory, and SDK ABI hashes are checked.
+- Borrows display scratch during cold TLS setup, restores it before body
+  transfer, and bounds rendering allocation pressure without changing layout.
+- Preserves user configuration, Stratum, wallet, target comparison, generation,
+  candidate validation and exact range-resumption semantics.
+- The development gate passed 2,979,747 physical full-digest/filter comparisons
+  with zero mismatch and 5,000,000 host differential cases. Exact final-binary
+  mining measurements belong to its accompanying hardware validation report;
+  a short test is not proof of multi-day stability.
+
 ## V1.8.3-multipool-perf.10-audit.1 - physical hardware candidate
 
 - Uses bounded, documented SDK other-core stalls and raw DPORT reads only

@@ -93,7 +93,7 @@ PoolDefinition resolvePoolDefinition(const char *host, uint16_t port) {
     copyText(definition.displayName, sizeof(definition.displayName),
              "HeliosPool");
     copyText(definition.apiBaseUrl, sizeof(definition.apiBaseUrl),
-             "https://stats-btc.heliospool.com/api/users/snapshot?address=");
+             "https://stats-btc.heliospool.com/api/users/");
   } else if (equals(definition.normalizedHost, "pool.nerdminers.org")) {
     definition.provider = PoolProviderKind::PublicPoolCompatible;
     copyText(definition.displayName, sizeof(definition.displayName),

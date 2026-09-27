@@ -1,4 +1,17 @@
 #include "display.h"
+#include <esp_heap_caps.h>
+#if defined(ESP32_2432S028_2USB)
+#include <atomic>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
+namespace {
+StaticSemaphore_t screenMutexStorage;
+SemaphoreHandle_t screenMutex = nullptr;
+std::atomic<bool> statsMemoryWindow{false};
+}
+extern void releaseCydScreenScratch();
+extern bool restoreCydScreenScratch();
+#endif
 
 #ifdef NO_DISPLAY
 DisplayDriver *currentDisplayDriver = &noDisplayDriver;
@@ -72,7 +85,29 @@ DisplayDriver *currentDisplayDriver = &ssd1306DisplayDriver;
 // Initialize the display
 void initDisplay()
 {
+#if defined(ESP32_2432S028_2USB)
+  screenMutex = xSemaphoreCreateMutexStatic(&screenMutexStorage);
+#endif
   currentDisplayDriver->initDisplay();
+}
+
+void beginStatsDisplayMemoryWindow() {
+#if defined(ESP32_2432S028_2USB)
+  statsMemoryWindow.store(true, std::memory_order_release);
+  xSemaphoreTake(screenMutex, portMAX_DELAY);
+  releaseCydScreenScratch();
+  xSemaphoreGive(screenMutex);
+#endif
+}
+
+void endStatsDisplayMemoryWindow() {
+#if defined(ESP32_2432S028_2USB)
+  if (!statsMemoryWindow.load(std::memory_order_acquire)) return;
+  xSemaphoreTake(screenMutex, portMAX_DELAY);
+  restoreCydScreenScratch();
+  xSemaphoreGive(screenMutex);
+  statsMemoryWindow.store(false, std::memory_order_release);
+#endif
 }
 
 // Alternate screen state
@@ -114,7 +149,28 @@ void switchToNextScreen()
 // Draw the current cyclic screen
 void drawCurrentScreen(unsigned long mElapsed)
 {
+#if defined(ESP32_2432S028_2USB)
+  if (statsMemoryWindow.load(std::memory_order_acquire)) return;
+  // Nonblocking: never queue UI frames behind a network operation.
+  if (xSemaphoreTake(screenMutex, 0) != pdTRUE) return;
+  if (statsMemoryWindow.load(std::memory_order_acquire) ||
+      !restoreCydScreenScratch()) {
+    xSemaphoreGive(screenMutex);
+    return;
+  }
+  // Defer a frame, not mining or accounting, during TLS's byte-heap peak.
+  // Font queues throw on allocation failure. Keep the previous complete frame
+  // until there is room for their transient allocations; appearance is unchanged.
+  if (heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) < 12000 ||
+      heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) < 4096) {
+    xSemaphoreGive(screenMutex);
+    return;
+  }
+#endif
   currentDisplayDriver->cyclic_screens[currentDisplayDriver->current_cyclic_screen](mElapsed);
+#if defined(ESP32_2432S028_2USB)
+  xSemaphoreGive(screenMutex);
+#endif
 }
 
 // Animate the current cyclic screen

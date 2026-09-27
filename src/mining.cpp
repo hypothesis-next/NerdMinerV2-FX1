@@ -2,6 +2,7 @@
 #include <ArduinoJson.h>
 #include <WiFi.h>
 #include <esp_task_wdt.h>
+#include <esp_timer.h>
 #include <nvs_flash.h>
 #include <nvs.h>
 //#include "ShaTests/nerdSHA256.h"
@@ -1335,6 +1336,7 @@ runClassicHardwareSequential(const JobRequest *job,
   result->nonce_count = job->nonce_count;
   uint32_t *const words = nerd_sha_text_words();
   bool memory_locked = false;
+  int64_t groupBegan = 0;
   for (uint32_t offset = 0; offset < job->nonce_count; ++offset)
   {
     const uint32_t nonce = job->nonce_start + offset;
@@ -1345,6 +1347,7 @@ runClassicHardwareSequential(const JobRequest *job,
     // Local interrupts are masked by the SDK lock: never yield or perform
     // network, queue or reference-validation work while holding this lock.
     if (!memory_locked) {
+      groupBegan = esp_timer_get_time();
       esp_sha_lock_memory_block();
       sha_hal_wait_idle();
       DPORT_STALL_OTHER_CPU_START();
@@ -1382,6 +1385,22 @@ runClassicHardwareSequential(const JobRequest *job,
       DPORT_STALL_OTHER_CPU_END();
       esp_sha_unlock_memory_block();
       memory_locked = false;
+      if (secureTransportCpuActive()) {
+        // Idle peripheral, no shared-memory lock and no interrupt masking:
+        // lend a bounded CPU window to TLS without a slow software nonce range.
+        // TLS computation needs a bounded share of the other CPU. Record I/O
+        // without this window failed a physical watchdog test. No SHA/DPORT
+        // lock is held here and these cycles are never counted as hashes.
+        const uint32_t windowUs = static_cast<uint32_t>(
+            (esp_timer_get_time() - groupBegan) / 2);
+        const uint32_t maximumUs = 1500U;
+        const bool handshake = secureTransportHandshakeActive();
+        const int64_t windowBegan = esp_timer_get_time();
+        delayMicroseconds(windowUs < maximumUs ? windowUs : maximumUs);
+        const uint32_t measuredWindowUs = static_cast<uint32_t>(esp_timer_get_time() - windowBegan);
+        shaCpuWindowMicroseconds().fetch_add(measuredWindowUs, std::memory_order_relaxed);
+        if (handshake) shaHandshakeWindowMicroseconds().fetch_add(measuredWindowUs, std::memory_order_relaxed);
+      }
     }
 #ifdef NERDMINER_SHA_DIAGNOSTICS
     if (!diagCheckNonce(job, nonce, hash, final_word, passes_filter)) {
@@ -1487,9 +1506,12 @@ runClassicHardwarePipelined(const JobRequest *job,
 #endif
 
 // TLS may own the SHA-256 engine across network waits. Never wait on that
-// engine: finish the already allocated range with the proven software engine.
+// engine: complete a bounded prefix with the proven software engine. The
+// existing handoff resumes its exact suffix, so brief TLS work does not commit
+// the miner to a whole slow 16,384-nonce software range.
 static void runSoftwareFallback(const JobRequest *job, JobResult *result)
 {
+  const int64_t began = esp_timer_get_time();
   alignas(uint32_t) uint8_t padded[128] = {};
   uint32_t midstate[8], bake[17];
   uint8_t hash[32];
@@ -1499,8 +1521,9 @@ static void runSoftwareFallback(const JobRequest *job, JobResult *result)
   padded[127] = 0x80;
   nerd_mids(midstate, padded);
   nerd_sha256_bake(midstate, padded + 64, bake);
-  result->nonce_count = job->nonce_count;
-  for (uint32_t offset = 0; offset < job->nonce_count; ++offset) {
+  const uint32_t prefix = job->nonce_count < 64U ? job->nonce_count : 64U;
+  result->nonce_count = prefix;
+  for (uint32_t offset = 0; offset < prefix; ++offset) {
     const uint32_t nonce = job->nonce_start + offset;
     memcpy(padded + 76, &nonce, sizeof(nonce));
     if (nerd_sha256d_baked(midstate, padded + 64, bake, hash)) {
@@ -1516,6 +1539,9 @@ static void runSoftwareFallback(const JobRequest *job, JobResult *result)
       break;
     }
   }
+  shaFallbackMicroseconds().fetch_add(
+      static_cast<uint32_t>(esp_timer_get_time() - began), std::memory_order_relaxed);
+  shaFallbackNonces().fetch_add(result->nonce_count, std::memory_order_relaxed);
 }
 
 void minerWorkerHw(void * task_id)
@@ -1703,9 +1729,14 @@ void runMonitor(void *name)
     { 
       mLastCheck = now_millis;
       last_update_millis = now_millis;
-      const uint64_t currentKHashes = completedHashesSnapshot() / 1000ULL;
+      const uint64_t currentHashes = completedHashesSnapshot();
+      const uint64_t currentKHashes = currentHashes / 1000ULL;
       elapsedKHs = static_cast<uint32_t>(currentKHashes - totalKHashes);
       totalKHashes = currentKHashes;
+      // Allocation-free telemetry is independent of rendering and UI smoothing.
+      Serial.printf("[Work] t=%u completed=%llu generation=%u\n", now_millis,
+        static_cast<unsigned long long>(currentHashes),
+        s_working_generation.load(std::memory_order_acquire));
 
       uptime_frac += mElapsed;
       while (uptime_frac >= 1000)
