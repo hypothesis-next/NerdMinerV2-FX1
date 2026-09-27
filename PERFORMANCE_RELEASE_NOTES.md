@@ -1,4 +1,29 @@
-# V1.8.3-multipool-perf.9 local performance candidate
+# V1.8.3-multipool-perf.10-audit.1 hardware-test candidate
+
+Unofficial NerdMiner_v2 modification; no upstream or pool-operator endorsement.
+
+- Sequential classic-ESP32 SHA obeys idle-before-write and retains MEMW after
+  commands. Bounded SDK other-core stalls protect DPORT access; the unsafe
+  active-SHA_TEXT overlap experiment remains disabled.
+- Independent candidate validation, generation ownership and completed-nonce
+  accounting remain enabled. TLS activity selects the existing exact software
+  fallback instead of starving secure transport on the other core.
+- Helios uses the official ISRG Root X2 with hostname/certificate verification,
+  a bounded 15-second handshake and unchanged snapshot endpoint. Its current
+  certificate chain is not anchored at the historical GTS Root R4.
+- Reusable display storage avoids transient large sprite allocation failures;
+  pool values now honor their intended vertical centering. No screen redesign.
+- Retry delay begins after request completion; byte-addressable heap is used
+  for the TLS memory gate. Other provider selection and generic trust remain.
+- audit.1 removes private framework paths from compiled diagnostic strings.
+
+On the physical test board the perf.10 implementation completed 490,454,000
+hash attempts in 1,198.891 seconds after warm-up: 409.09 kH/s, with 381 accepted
+submissions, none rejected, and no SHA validation/reset/reconnect failure.
+For the exact audit.1 binary, see the accompanying hardware-test report.
+These are limited single-board observations, not multi-day stability proof.
+
+## Historical perf.9 local-only notes (not current release validation)
 
 This is an unofficial modification of NerdMiner_v2, not an endorsed release
 of BitMaker-hub, NerdMiner, HeliosPool, or any pool operator.

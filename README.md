@@ -6,8 +6,14 @@
 
 This fork preserves the V1.8.3 Stratum mining implementation and replaces the
 pool dashboard's fixed Public Pool behavior with a provider-based statistics
-layer. The current local release candidate is **V1.8.3-multipool-perf.9**; the
+layer. The current hardware-test candidate is **V1.8.3-multipool-perf.10-audit.1**; the
 previous **V1.8.3-multipool.1** release remains the rollback baseline.
+
+The perf.10 mining implementation measured 409.09 kH/s over 1,198.891 seconds
+after warm-up on one ESP32_2432S028_2USB, with 381 accepted submissions and no
+validation failures. The audit.1 rebuild additionally removes private framework
+paths from diagnostics. Consult the bundled hardware-test report for validation
+of the exact released binary; this is not a guarantee for every board or network.
 
 Key behavior:
 
