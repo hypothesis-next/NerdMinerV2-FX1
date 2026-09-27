@@ -18,3 +18,12 @@ def get_firmware_specifier_build_flag():
 env.Append(
     BUILD_FLAGS=[get_firmware_specifier_build_flag()]
 )
+
+# Preserve useful file names in diagnostics without embedding the builder's
+# private package-installation directory in release binaries.
+framework_dir = env.PioPlatform().get_package_dir("framework-arduinoespressif32")
+if framework_dir:
+    framework_prefix = str(framework_dir).replace("\\", "/")
+    env.Append(BUILD_FLAGS=[
+        "-ffile-prefix-map=" + framework_prefix + "=framework-arduinoespressif32"
+    ])
