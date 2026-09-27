@@ -1,5 +1,23 @@
 # Changelog
 
+## V1.8.3-multipool-perf.10-audit.1 - physical hardware candidate
+
+- Uses bounded, documented SDK other-core stalls and raw DPORT reads only
+  inside those intervals; retains MEMW and idle-before-SHA_TEXT-write ordering.
+- Amortizes SHA ownership over bounded groups; independent candidate validation,
+  job generation and completed-nonce accounting remain unchanged.
+- Coordinates secure transport with exact software mining fallback, preserving
+  network responsiveness without disabling mining or certificate verification.
+- Updates Helios to official ISRG Root X2 and a bounded 15-second handshake.
+  Uses byte-addressable heap for the memory gate and completion-based retries.
+- Reuses the display sprite allocation to avoid TLS-time heap fragmentation;
+  fixes vertically clipped pool values without redesigning the screen.
+- Corrects the inherited Merkle string terminator's one-byte out-of-bounds write.
+- Removes private framework paths from release diagnostic strings.
+- The perf.10 checkpoint physically measured 409.09 kH/s with 381 accepted,
+  zero rejected submissions and zero SHA validation errors. See the bundled
+  report for exact audit.1 binary validation and remaining memory/stability risks.
+
 ## V1.8.3-multipool-perf.9-audit.1 - local regression gate corrections
 
 - Keeps job precomputation buffers alive across coordinator iterations.
