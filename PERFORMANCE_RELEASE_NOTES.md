@@ -1,4 +1,8 @@
-# V1.8.3-multipool-perf.11-rc.1 hardware-test candidate
+# V1.8.3-multipool-perf.11-rc.2 hardware-test candidate
+
+The whole-response drain deadline is 90 seconds after a physical rc.1 run
+reproduced a valid historical tail exceeding 30 seconds. Body size/read bounds
+remain enabled; the correction avoids unnecessary cold TLS reconnections.
 
 Unofficial NerdMiner_v2 modification; no upstream or pool endorsement.
 This candidate updates Helios to `/api/users/<address>` and keeps authenticated

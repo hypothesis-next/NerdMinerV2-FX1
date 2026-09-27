@@ -1,5 +1,15 @@
 # Changelog
 
+## V1.8.3-multipool-perf.11-rc.2 - bounded response-drain correction
+
+- A physical final-candidate run reproduced HTTP 200 with a complete user object
+  but a historical tail exceeding the 30-second drain deadline. This closed a
+  healthy reusable TLS connection and forced an expensive new handshake.
+- Raises only that whole-response deadline to 90 seconds. The 512 KiB body cap,
+  five-second per-read timeout, certificate checks, refresh interval, last-good
+  cache and mining isolation remain unchanged. No mining algorithm/UI change.
+- Exact final-binary hardware results are recorded in the release artifacts.
+
 ## V1.8.3-multipool-perf.11-rc.1 - Helios refresh / mining coexistence candidate
 
 - Uses the deployed Helios `/api/users/<address>` route and captures only the

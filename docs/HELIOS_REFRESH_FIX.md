@@ -41,7 +41,10 @@ No SHA_TEXT write occurs during active compression. MEMW remains mandatory.
 
 The verified HTTPS socket is reused after fully draining a bounded response:
 only up to 16 KiB of the compact first user object is retained, body transfer is
-limited to 512 KiB and 30 seconds, and ordinary socket reads retain their timeout.
+limited to 512 KiB and 90 seconds, and ordinary socket reads retain their timeout.
+The first final-candidate run reproduced a valid 200 response whose historical
+tail exceeded the previous 30-second limit; the corrected deadline prevents that
+healthy transfer from needlessly closing the reusable TLS connection.
 A closed verified session may be cached;
 no second peer certificate tree is kept while the connection stays open.
 

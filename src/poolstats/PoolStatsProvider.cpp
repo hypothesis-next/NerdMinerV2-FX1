@@ -28,6 +28,10 @@ constexpr uint16_t READ_TIMEOUT_MS = 5000;
 constexpr uint32_t TLS_HANDSHAKE_TIMEOUT_SECONDS = 60;
 constexpr int MAX_RESPONSE_BYTES = 16384;
 constexpr size_t MAX_HELIOS_BODY_BYTES = 512U * 1024U;
+// A valid ~250 KiB historical tail exceeded 30 seconds on the physical ESP32.
+// Bound the whole drain independently of the per-read timeout, without forcing
+// a costly reconnect while a healthy keep-alive response is still progressing.
+constexpr uint32_t HELIOS_DRAIN_TIMEOUT_MS = 90000;
 constexpr char USER_AGENT[] = "NerdMinerV2-MultiPool/" CURRENT_VERSION;
 
 extern const uint8_t rootca_crt_bundle_start[]
@@ -158,7 +162,7 @@ PoolFetchResult parseHeliosResponse(HTTPClient &http,
     void flush() override {}
     size_t write(uint8_t value) override { return write(&value, 1); }
     size_t write(const uint8_t *data, size_t length) override {
-      if (millis() - began > 30000U) return 0;
+      if (millis() - began > HELIOS_DRAIN_TIMEOUT_MS) return 0;
       for (size_t i = 0; i < length; ++i) {
         if (capture.needsCapacity()) {
           const size_t nextSize = capacity * 2;
