@@ -18,5 +18,5 @@ Static RAM: 56380 bytes
 Application flash usage reported by PlatformIO: 2154693 bytes of 3145728
 IRAM: 110863 bytes text plus 1027 bytes vectors = 111890 bytes
 Source ZIP: NerdMinerV2-V1.8.3-FX1-source.zip
-Source ZIP SHA-256: see SHA256SUMS.txt (final archive generated after documentation freeze)
+Source ZIP SHA-256: e00372e67ca253d69a4d16fa877946531196bb55897877e8192efc6ab6c7d042
 Source ZIP provenance: final committed source tree archive, excluding the release payload directory and removed legacy bin/ directory; firmware binaries are distributed separately
