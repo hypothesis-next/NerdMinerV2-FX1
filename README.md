@@ -47,7 +47,7 @@ RC should not be treated as validated for every board supported by upstream.
 
 ## Install / Update
 
-The [browser flasher](docs/index.html) provides a recommended
+The [Web Flasher](https://samkruzlic.github.io/NerdMinerV2-FX1/) provides a recommended
 **Update / Keep My Configuration** path for compatible existing installations.
 It flashes only the
 [physically tested application image](docs/release/NerdMinerV2-V1.8.3-FX1-ESP32_2432S028_2USB-application.bin)
