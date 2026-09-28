@@ -1,0 +1,4 @@
+# Publish the already-packaged release artifacts byte-for-byte, including text
+# documents covered by SHA256SUMS.txt, regardless of checkout line endings.
+* -text
+LICENSES/** -text

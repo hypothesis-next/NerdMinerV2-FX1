@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>NerdMiner V2 FX1 — V1.8.3-FX1 RC1 web flasher</title>
+  <meta name="description" content="Unofficial NerdMiner V2 FX1 release candidate for ESP32_2432S028_2USB. Update while keeping compatible existing settings.">
+  <link rel="icon" type="image/svg+xml" href="./favicon.svg">
+  <script type="module" src="https://unpkg.com/esp-web-tools@10.4.0/dist/web/install-button.js?module"></script>
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, -apple-system, Segoe UI, sans-serif; background: #101824; color: #ecf3fb; }
+    * { box-sizing: border-box; }
+    body { margin: 0; line-height: 1.55; }
+    main { width: min(100% - 2rem, 850px); margin: 0 auto; padding: 2.5rem 0 4rem; }
+    a { color: #8bd9ff; }
+    a:hover { color: #c8edff; }
+    h1, h2 { line-height: 1.18; letter-spacing: -.02em; }
+    h1 { font-size: clamp(2rem, 5vw, 3rem); margin: .4rem 0; }
+    h2 { font-size: 1.35rem; margin: 0 0 .6rem; }
+    p { margin: .55rem 0 1rem; }
+    .eyebrow { color: #77d9c4; text-transform: uppercase; font-size: .78rem; font-weight: 750; letter-spacing: .1em; }
+    .lede { color: #cbd9e7; font-size: 1.07rem; }
+    .tag { display: inline-block; border: 1px solid #589a86; border-radius: 999px; padding: .15rem .6rem; color: #95e5d1; font-size: .8rem; font-weight: 700; }
+    .card { background: #1a2838; border: 1px solid #344a5e; border-radius: 16px; padding: 1.35rem; margin: 1.4rem 0; }
+    .primary { border-color: #5ad5bd; box-shadow: 0 0 0 1px #5ad5bd44; }
+    .note { color: #c9d9e9; }
+    .warning { background: #3a2b20; border: 1px solid #d29b60; border-radius: 10px; padding: .7rem .85rem; color: #ffe0b8; }
+    .steps { padding-left: 1.35rem; }
+    .steps li { margin: .38rem 0; }
+    .features { columns: 2; padding-left: 1.25rem; }
+    .features li { break-inside: avoid; margin-bottom: .4rem; }
+    .links { display: flex; flex-wrap: wrap; gap: .55rem 1.2rem; }
+    button[slot="activate"] { cursor: pointer; background: #5ad5bd; color: #0e2022; border: 0; border-radius: 10px; padding: .8rem 1.15rem; font: inherit; font-weight: 800; }
+    button[slot="activate"]:hover { background: #86e8d4; }
+    button[slot="activate"]:focus-visible, a:focus-visible, input:focus-visible { outline: 3px solid #8bd9ff; outline-offset: 3px; }
+    .factory button[slot="activate"] { background: #d7af7f; color: #24170b; }
+    .factory { margin-top: 2rem; }
+    .factory summary { cursor: pointer; font-weight: 750; font-size: 1.1rem; }
+    .factory-panel { padding-top: 1rem; }
+    .factory-confirm { display: block; margin: 1rem 0; }
+    .factory-install[hidden], [hidden] { display: none !important; }
+    footer { margin-top: 2.5rem; color: #a9bdd0; font-size: .9rem; }
+    @media (max-width: 620px) { .features { columns: 1; } .card { padding: 1rem; } }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="eyebrow">NerdMiner V2 FX1 <span class="tag">RC / Beta</span></div>
+    <h1>V1.8.3-FX1 RC1</h1>
+    <p class="lede">An unofficial open-source NerdMiner V2 fork. Physically tested on the <strong>ESP32_2432S028_2USB</strong> (classic ESP32, 4 MB flash). Other variants are not validated.</p>
+    <p>Up to <strong>~446 kH/s</strong> measured on our test unit, compared with ~340 kH/s on stock firmware. Results vary by board and setup.</p>
+  </header>
+
+  <section class="card primary" aria-labelledby="update-heading">
+    <h2 id="update-heading">Update to FX1 — keep my configuration</h2>
+    <p class="note">Recommended for the supported board with a compatible existing partition layout. This writes <strong>only the application</strong> at <code>0x10000</code>; it does not include NVS, SPIFFS, bootloader or partition-table files.</p>
+    <ol class="steps">
+      <li>Connect your NerdMiner to this computer with a data-capable USB cable.</li>
+      <li>Click the button, choose its serial device, then choose Install.</li>
+      <li>When asked <strong>“Erase device?”</strong>, leave the box <strong>unchecked</strong> and click Next. Erasing would delete your settings.</li>
+      <li>Keep USB connected until flashing finishes. The miner will reboot.</li>
+    </ol>
+    <p class="warning"><strong>Do not select “Erase device”.</strong> The recommended update preserves existing Wi-Fi, mining address and pool settings only on a compatible layout. Back up the device first if the existing layout is uncertain. This is RC/Beta firmware.</p>
+    <esp-web-install-button manifest="./manifest-update.json">
+      <button slot="activate" type="button">Update / Keep My Configuration</button>
+      <span slot="unsupported">Browser flashing needs a desktop browser with Web Serial, such as current Chrome or Edge. See the <a href="./release/FLASHING.md">manual flashing guide</a>.</span>
+      <span slot="not-allowed">Open the published HTTPS GitHub Pages site (or localhost) to enable browser flashing. See the <a href="./release/FLASHING.md">manual guide</a>.</span>
+    </esp-web-install-button>
+  </section>
+
+  <details class="card factory">
+    <summary>Advanced: fresh install / recovery</summary>
+    <div class="factory-panel">
+      <p class="warning"><strong>Settings can be lost.</strong> The factory image starts at <code>0x0000</code> and spans the NVS/configuration region. Use it only for a deliberate clean install or recovery—not to update a configured miner.</p>
+      <label class="factory-confirm"><input type="checkbox" id="factory-ack"> I understand that factory flashing can erase my Wi-Fi, mining address and pool configuration.</label>
+      <div class="factory-install" id="factory-install" hidden>
+        <esp-web-install-button manifest="./manifest-factory.json">
+          <button slot="activate" type="button">Fresh Install / Factory Image</button>
+          <span slot="unsupported">Use desktop Chrome or Edge with Web Serial, or follow the <a href="./release/FLASHING.md">manual guide</a>.</span>
+          <span slot="not-allowed">Use the published HTTPS GitHub Pages site or the <a href="./release/FLASHING.md">manual guide</a>.</span>
+        </esp-web-install-button>
+      </div>
+    </div>
+  </details>
+
+  <section class="card" aria-labelledby="features-heading">
+    <h2 id="features-heading">What FX1 improves</h2>
+    <ul class="features">
+      <li>Higher physically measured mining throughput</li>
+      <li>Bitcoin hashing and share correctness fixes</li>
+      <li>Independent SHA-256d candidate validation</li>
+      <li>More robust job, nonce and hashrate accounting</li>
+      <li>HeliosPool dashboard and secure API/TLS integration</li>
+      <li>Pool statistics without large periodic mining slowdowns</li>
+      <li>Multi-pool statistics architecture</li>
+      <li>Memory, display and stability fixes</li>
+    </ul>
+    <p>Read the <a href="./release/CHANGELOG.md">full changelog</a> for technical details.</p>
+  </section>
+
+  <nav class="card links" aria-label="Release links">
+    <a id="source-link" hidden>Source repository</a>
+    <a href="./release/HARDWARE_VALIDATION.md">Hardware validation</a>
+    <a href="./release/FLASHING.md">Manual flashing / rollback</a>
+    <a href="./release/NerdMinerV2-V1.8.3-FX1-ESP32_2432S028_2USB-application.bin" download>Application download</a>
+    <a href="./release/NerdMinerV2-V1.8.3-FX1-ESP32_2432S028_2USB-factory.bin" download>Factory download</a>
+    <a href="./release/NerdMinerV2-V1.8.3-FX1-source.zip" download>Source ZIP</a>
+    <a href="./release/LICENSE">MIT license</a>
+    <a href="./release/THIRD_PARTY_NOTICES.md">Attribution</a>
+  </nav>
+
+  <footer>Unofficial fork. Not an official NerdMiner, BitMaker or pool release. The browser flasher runs locally in your browser and needs access to the USB serial device only when you select it.</footer>
+</main>
+<script>
+  const factoryAck = document.getElementById('factory-ack');
+  factoryAck.addEventListener('change', () => {
+    document.getElementById('factory-install').hidden = !factoryAck.checked;
+  });
+  const host = /^([^.]+)\.github\.io$/i.exec(location.hostname);
+  if (host) {
+    const owner = host[1];
+    const repo = location.pathname.split('/').filter(Boolean)[0] || `${owner}.github.io`;
+    const source = document.getElementById('source-link');
+    source.href = `https://github.com/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
+    source.hidden = false;
+  }
+</script>
+</body>
+</html>

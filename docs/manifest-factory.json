@@ -1,0 +1,17 @@
+{
+  "name": "NerdMiner V2 FX1 Factory",
+  "version": "V1.8.3-FX1 RC1",
+  "new_install_prompt_erase": true,
+  "new_install_improv_wait_time": 0,
+  "builds": [
+    {
+      "chipFamily": "ESP32",
+      "parts": [
+        {
+          "path": "./release/NerdMinerV2-V1.8.3-FX1-ESP32_2432S028_2USB-factory.bin",
+          "offset": 0
+        }
+      ]
+    }
+  ]
+}
