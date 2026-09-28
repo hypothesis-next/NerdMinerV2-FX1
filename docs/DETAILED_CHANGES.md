@@ -476,7 +476,7 @@ index into the exact stock-to-FX1 patch, not separate performance claims.
 | `data/cert/isrg_root_x2.pem` | `-0,0 +1,14 ` | Pool providers, API and TLS |
 | `docs/.nojekyll` | `-0,0 +1 ` | documentation/release artifact |
 | `docs/BUILD_AND_TEST.md` | `-0,0 +1,64 ` | documentation/release artifact |
-| `docs/DETAILED_CHANGES.md` | `-0,0 +1,448 ` | documentation/release artifact |
+| `docs/DETAILED_CHANGES.md` | `-0,0 +1,590 ` | documentation/release artifact |
 | `docs/HARDWARE_VALIDATION.md` | `-0,0 +1,75 ` | documentation/release artifact |
 | `docs/HELIOS_REFRESH_FIX.md` | `-0,0 +1,92 ` | documentation/release artifact |
 | `docs/MULTIPOOL_ARCHITECTURE.md` | `-0,0 +1,95 ` | documentation/release artifact |
@@ -509,7 +509,7 @@ index into the exact stock-to-FX1 patch, not separate performance claims.
 | `docs/release/LICENSES/WiFiManager-LICENSE.txt` | `-0,0 +1,22 ` | documentation/release artifact |
 | `docs/release/LICENSES/certifi-LICENSE.txt` | `-0,0 +1,20 ` | documentation/release artifact |
 | `docs/release/LICENSES/mbedtls-LICENSE.txt` | `-0,0 +1,202 ` | documentation/release artifact |
-| `docs/release/SHA256SUMS.txt` | `-0,0 +1,21 ` | documentation/release artifact |
+| `docs/release/SHA256SUMS.txt` | `-0,0 +1,22 ` | documentation/release artifact |
 | `docs/release/THIRD_PARTY_NOTICES.md` | `-0,0 +1,57 ` | documentation/release artifact |
 | `lib/TFT_eSPI/User_Setup_Select.h` | `-151,0 +152,3 ` | inherited board support |
 | `lib/TFT_eSPI/User_Setups/Setup215_M5_Cardputer_Adv.h` | `-0,0 +1,31 ` | inherited board support |
