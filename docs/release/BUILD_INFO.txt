@@ -1,6 +1,6 @@
 Public/display version: V1.8.3-FX1
 Internal build identifier: V1.8.3-multipool-perf.11-rc.2
-Release status: unofficial release candidate; clean committed build not reflashed
+Release status: unofficial RC1; exact application later browser-flashed and byte-verified on one ESP32_2432S028_2USB
 Branch: hardware-helios-refresh
 Commit: 33bd54f9077f7b31dd40ee776637dfc1f1df17c9
 Target: ESP32_2432S028_2USB; classic ESP32; 240 MHz; 4 MB flash
@@ -18,5 +18,5 @@ Static RAM: 56380 bytes
 Application flash usage reported by PlatformIO: 2154693 bytes of 3145728
 IRAM: 110863 bytes text plus 1027 bytes vectors = 111890 bytes
 Source ZIP: NerdMinerV2-V1.8.3-FX1-source.zip
-Source ZIP SHA-256: 9ac5544df23742a3f2f8b7a50948125d17eb41222947a69de0bac252fcf01386
-Source ZIP provenance: git archive of the exact commit, restricted to tracked buildable source, tests and licenses; unrelated prebuilt binaries and stale historical documents excluded
+Source ZIP SHA-256: see SHA256SUMS.txt (final archive generated after documentation freeze)
+Source ZIP provenance: final committed source tree archive, excluding the release payload directory and removed legacy bin/ directory; firmware binaries are distributed separately

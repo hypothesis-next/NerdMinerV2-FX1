@@ -1,5 +1,9 @@
 # perf.9 local mining results
 
+> Historical pre-hardware estimate. Its original performance projections were
+> superseded by physical testing; use the [FX1 hardware results](release/HARDWARE_VALIDATION.md)
+> for measured throughput and correctness.
+
 Unofficial NerdMiner_v2 modification. Comparison source: perf.8 commit
 `1c5fc809c17daa0143cae737a343342dd968db5f`. Target:
 ESP32_2432S028_2USB, classic dual-core Xtensa LX6, 240 MHz, 4 MB flash.

@@ -1,5 +1,10 @@
 # V1.8.3-multipool-perf.11-rc.2 hardware-test candidate
 
+> Historical development checkpoint, not the V1.8.3-FX1 RC1 installation
+> guide. See [CHANGELOG.md](CHANGELOG.md),
+> [DETAILED_CHANGES.md](docs/DETAILED_CHANGES.md) and the exact release
+> [hardware validation](docs/release/HARDWARE_VALIDATION.md).
+
 The whole-response drain deadline is 90 seconds after a physical rc.1 run
 reproduced a valid historical tail exceeding 30 seconds. Body size/read bounds
 remain enabled; the correction avoids unnecessary cold TLS reconnections.

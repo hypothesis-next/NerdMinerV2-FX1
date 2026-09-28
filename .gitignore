@@ -5,7 +5,8 @@
 *.sln
 *.vcxproj*
 NerdMinerLog.txt
-bin/0x10000_firmware.bin
+# Legacy upstream prebuilt images/Windows flash-tool state are not part of FX1.
+bin/
 logs
 test/.build/
 firmware/

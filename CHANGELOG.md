@@ -1,292 +1,92 @@
 # Changelog
 
-## V1.8.3-multipool-perf.11-rc.2 - bounded response-drain correction
+## V1.8.3-FX1 RC1 — unofficial release candidate
 
-- A physical final-candidate run reproduced HTTP 200 with a complete user object
-  but a historical tail exceeding the 30-second drain deadline. This closed a
-  healthy reusable TLS connection and forced an expensive new handshake.
-- Raises only that whole-response deadline to 90 seconds. The 512 KiB body cap,
-  five-second per-read timeout, certificate checks, refresh interval, last-good
-  cache and mining isolation remain unchanged. No mining algorithm/UI change.
-- Exact final-binary hardware results are recorded in the release artifacts.
-
-## V1.8.3-multipool-perf.11-rc.1 - Helios refresh / mining coexistence candidate
-
-- Uses the deployed Helios `/api/users/<address>` route and captures only the
-  compact `user` object while draining bounded HTTP framing for keep-alive.
-  The previous query-parameter snapshot route now returns HTTP 400.
-- Keeps verified TLS connections across refreshes. Uses the SDK's complete
-  software SHA mode only for the statistics task's TLS contexts; mining retains
-  its documented, MEMW-protected hardware path and independent validation.
-- Offers bounded other-core CPU windows outside SHA/DPORT critical sections,
-  during TLS work. Reports fallback/window time
-  separately from exact completed-nonce telemetry; counters are not inflated.
-- Avoids retaining a duplicate session/certificate tree while a socket is open.
-  Rejects bulk-read/no-window variants after refresh throughput and watchdog
-  regressions on the physical board; retains the stable transfer path.
-- Builds matching, unmodified official mbedTLS 2.28.4 TLS runtime sources with
-  a supported 1024-byte outgoing-record limit. Incoming records remain 16 KiB,
-  hostname/CA verification remains mandatory, and SDK ABI hashes are checked.
-- Borrows display scratch during cold TLS setup, restores it before body
-  transfer, and bounds rendering allocation pressure without changing layout.
-- Preserves user configuration, Stratum, wallet, target comparison, generation,
-  candidate validation and exact range-resumption semantics.
-- The development gate passed 2,979,747 physical full-digest/filter comparisons
-  with zero mismatch and 5,000,000 host differential cases. Exact final-binary
-  mining measurements belong to its accompanying hardware validation report;
-  a short test is not proof of multi-day stability.
-
-## V1.8.3-multipool-perf.10-audit.1 - physical hardware candidate
-
-- Uses bounded, documented SDK other-core stalls and raw DPORT reads only
-  inside those intervals; retains MEMW and idle-before-SHA_TEXT-write ordering.
-- Amortizes SHA ownership over bounded groups; independent candidate validation,
-  job generation and completed-nonce accounting remain unchanged.
-- Coordinates secure transport with exact software mining fallback, preserving
-  network responsiveness without disabling mining or certificate verification.
-- Updates Helios to official ISRG Root X2 and a bounded 15-second handshake.
-  Uses byte-addressable heap for the memory gate and completion-based retries.
-- Reuses the display sprite allocation to avoid TLS-time heap fragmentation;
-  fixes vertically clipped pool values without redesigning the screen.
-- Corrects the inherited Merkle string terminator's one-byte out-of-bounds write.
-- Removes private framework paths from release diagnostic strings.
-- The perf.10 checkpoint physically measured 409.09 kH/s with 381 accepted,
-  zero rejected submissions and zero SHA validation errors. See the bundled
-  report for exact audit.1 binary validation and remaining memory/stability risks.
-
-## V1.8.3-multipool-perf.9-audit.1 - local regression gate corrections
-
-- Keeps job precomputation buffers alive across coordinator iterations.
-- Stops ranges at each qualifying candidate and resumes their exact suffix;
-  preserves results with bounded backpressure rather than dropping a full queue.
-- Snapshots network target and pool difficulty; preserves valid block candidates
-  regardless of pool difficulty changes, including equality boundaries.
-- Accounts queued completed work on stop/disconnect and synchronizes generation
-  transitions with queue clearing. Emits exactly eight nonce hex digits.
-- Initializes absent NVS share/block values. Physical validation remains deferred.
-- Protects the shared SHA_TEXT window against other SHA algorithms with the SDK
-  memory lock for one nonce, plus the all-engine idle wait. Never holds this
-  critical section while waiting for result-queue space or validating candidates.
-- Uses nonblocking SHA engine acquisition; when TLS owns SHA-256, hashes the
-  allocated range with the existing software engine rather than blocking mining.
-- Uses full reference hashing for unusually easy jobs outside the exact fixed
-  16-zero-bit filter domain; retains normal optimized Bitcoin mining.
-
-## V1.8.3-multipool-perf.9 - local protected-HW performance candidate
-
-- Moves the classic-ESP32 sequential SHA range kernel into IRAM.
-- Inlines the official APB pre-read / interrupt-protected DPORT workaround
-  into BUSY polling, removing repeated windowed function calls.
-- Combines final idle polling and the exact-filter digest-word read under
-  one protected interval; inlines an integer-only nonce byte swap.
-- Shares one SHA register-window base across the range and control writes.
-- Selects per-function `-O2` for the HW kernel only; the SW engine stays `-Os`.
-- Separates candidate presence from the valid nonce value `0xFFFFFFFF`.
-- Adds emitted-Xtensa instruction / SHA-MMIO model tests for header ownership,
-  padding, candidate storage, nonce wrap, cancellation and the peripheral contract.
-- Rejects schedule-first, split-compression and alternate-majority SW trials;
-  the production software SHA source is unchanged from perf.8.
-- No counter/timing, UI, Stratum, wallet, PoolStats, TLS or NTP changes.
-- Local builds and tests only. Physical throughput, stability, heap/stack and
-  TLS/hardware-SHA coexistence require later real-board validation.
-
-See `docs/PERF9_RESULTS.md` for evidence, experiment decisions and estimates.
-
-## V1.8.3-multipool-perf.8 - local safe-performance candidate
-
-### Changed
-
-- Uses ESP-IDF's documented protected sequence-read form for repeated classic
-  ESP32 SHA BUSY polling.
-- Keeps the SHA_TEXT window base in one address register, removing repeated
-  per-word address materialization without writing while the engine is busy.
-- Precomputes the job-constant contributions to software-SHA schedule words
-  W18 and W19.
-- Retains the documented sequential hardware pipeline and the existing fully
-  unrolled software engine; rejected compact and partial-unroll experiments
-  are not present in production source.
-
-### Validation status
-
-- Five million differential SHA cases pass with zero mismatches.
-- The `ESP32_2432S028_2USB` target builds successfully with unchanged static
-  RAM usage and unchanged 112-byte software-SHA stack frame.
-- Throughput effects remain **REQUIRES REAL HARDWARE**; no 600--800 kH/s claim
-  is made.
-
-## V1.8.3-multipool-perf.6 - local correctness candidate
-
-### Changed
-
-- Disabled the perf.5 SHA_TEXT-overlap experiment in normal builds because the
-  classic ESP32 hardware contract requires the shared text window to remain
-  untouched while the engine is busy.
-- Retained the experiment behind the explicit development-only
-  `NERDMINER_EXPERIMENTAL_SHA_TEXT_OVERLAP=1` build macro.
-- Safely overlaps only the nonce byte swap in CPU registers and waits for the
-  final hardware LOAD to become idle before reading the digest.
-- Corrected the unsupported SW/HW baseline decomposition in the performance
-  methodology; 340--350 kH/s is measured only as a combined value.
-
-### Validation status
-
-- Five million differential SHA cases and the full native mining-validation
-  suite pass with zero mismatches.
-- A clean `ESP32_2432S028_2USB` target build succeeds with the experimental
-  SHA_TEXT overlap absent from the release binary.
-- Physical throughput and long-runtime behavior remain **REQUIRES REAL HARDWARE**.
-
-## V1.8.3-multipool-perf.5 - local performance candidate
-
-### Changed
-
-- Added a classic-ESP32 hardware-SHA register-fill pipeline that overlaps text
-  preparation with the three required compression operations per nonce.
-- Moved the compact hardware hot loop to IRAM and retained `-Os` after isolated
-  `-O2`/`-O3` variants increased code size, stack, and spills.
-- Reduced the normal exact-filter digest read to the framework's SMP-safe
-  single-register path; full digest reads remain rare.
-- Extended the native test runner so a fresh invocation compiles and executes
-  both the PoolStats suite and the five-million-case mining validation suite.
-
-### Correctness guard
-
-- The original sequential hardware miner remains compiled as a permanent
-  fallback. The first nonce and every 4096th nonce are independently recomputed,
-  as is every early-filter hit. A mismatch disables the pipeline and recomputes
-  the complete range sequentially before any work is counted.
-- Candidate snapshots, full-width generation checks, exact target comparison,
-  Stratum submission, wallet behavior and the visible UI are unchanged.
-
-### Validation status
-
-- Five million optimized-vs-reference software SHA-256d cases pass with zero
-  mismatches; target, historical header, forced-candidate, stale-generation and
-  nonce-range tests also pass.
-- The target firmware builds for `ESP32_2432S028_2USB`. The new peripheral
-  schedule and its physical hashrate remain **REQUIRES REAL HARDWARE**.
-
-## V1.8.3-multipool-perf.4 - local release candidate
-
-### Changed
-
-- Added the official self-signed GTS Root R4 certificate as a dedicated,
-  provider-specific HeliosPool HTTPS trust anchor.
-- Kept the generic Mozilla CA bundle for Public Pool and compatible providers.
-- Changed the statistics-task SNTP server from `europe.pool.ntp.org` to the
-  geographically distributed `pool.ntp.org` service.
-- Made the pre-TLS UTC clock gate deterministic and host-testable.
-
-### Validation status
-
-- The committed PEM exactly matches the official `https://pki.goog/roots.pem`
-  GTS Root R4 entry and passed subject, issuer, self-signature, CA constraint,
-  validity, fingerprint, and checksum verification.
-- A desktop TLS client using only this root validated
-  `stats-btc.heliospool.com`; an incorrect hostname was rejected. The live
-  snapshot route returned its expected missing-address HTTP 400 response.
-- Native PoolStats tests and the five-million-case mining/SHA regression suite
-  pass. The clean `ESP32_2432S028_2USB` build uses 55,700 bytes of static RAM
-  and 2,144,321 bytes of application flash according to PlatformIO.
-- ESP32 TLS, SNTP, display, memory, watchdog, and recovery behavior require a
-  later combined physical-hardware validation cycle.
-
-## V1.8.3-multipool-perf.3 - 2026-09-11
-
-Follow-up hotfix for verified HTTPS pool statistics on physical hardware.
-
-### Fixed
-
-- Start non-blocking system time synchronization after Wi-Fi connects and defer
-  HTTPS statistics requests until the ESP32 clock is valid for certificate
-  verification. NTP failure remains isolated from mining.
-
-## V1.8.3-multipool-perf.2 - 2026-09-11
-
-Hardware-validated hotfix for the HeliosPool statistics task.
-
-### Fixed
-
-- Increased the isolated PoolStats task stack from 10 KiB to 16 KiB. The
-  previous allocation overflowed during the classic ESP32 mbedTLS entropy/TLS
-  setup path, causing a stack-canary panic and reboot loop after Wi-Fi connected.
-
-### Preserved
-
-- Mining, Stratum, independent SHA-256d validation, display layout, pool
-  providers, and performance architecture are unchanged.
-
-## V1.8.3-multipool-perf.1 - 2026-09-11
-
-Performance and correctness test release based on V1.8.3-multipool.1.
+This release is based on NerdMiner V2 V1.8.3. The public firmware binary is
+validated for **ESP32_2432S028_2USB**; other board variants are not covered by
+the physical results below. The full stock-to-FX1 source inventory, including
+inherited import differences and small cosmetic edits, is in
+[DETAILED_CHANGES.md](docs/DETAILED_CHANGES.md).
 
 ### Added
 
-- Independent, permanently enabled reference SHA-256d validation before every
-  locally generated share submission.
-- Deterministic native SHA, target-boundary, early-filter, stale-generation,
-  candidate-corruption, and nonce-range tests.
-- Exact 80-byte candidate header snapshots and validation-error accounting.
+- Pool-specific statistics providers with HeliosPool support, separate from
+  Stratum mining. Unknown pools continue to mine without making a substituted
+  Public Pool request.
+- Independent reference SHA-256d validation of share/block candidates and
+  native tests for hashing, target boundaries, job transitions, nonce ranges,
+  PoolStats parsing/policy and certificate provenance.
+- A configuration-preserving browser updater that writes the tested application
+  image only at `0x10000` on compatible layouts; the factory installer is
+  deliberately separate and marked as configuration-destructive.
 
-### Changed
+### Mining correctness and safety
 
-- Corrected the byte-exact little-endian 256-bit network-target comparison.
-- Corrected network-target conversion so all 32 bytes, rather than only eight
-  byte pairs, are converted to the little-endian representation used by mining.
-- Replaced the eight-bit worker cancellation generation with a full 32-bit
-  atomic generation.
-- Normalized completed nonce counts after every returned batch so the
-  sub-million counter cannot overflow during a long interval without a new job.
-- Widened the total-kilohash snapshot to 64 bits for long-running devices.
-- Build and package filenames now use the firmware's explicit unofficial
-  version identifier.
+- Correct full-width 256-bit share/network target comparison and target-byte
+  order; verified the exact reconstructed 80-byte header before submission.
+- Full-width job generations, stale-result protection, immutable candidate
+  snapshots, exact range continuation after candidates and correct handling of
+  nonce `0xFFFFFFFF`.
+- Synchronized long-running completed-hash counters and partial-range
+  accounting; submission now checks whether the complete Stratum message was
+  written. Wallet, extranonce, job ID and nTime remain tied to the job.
+- Classic-ESP32 SHA command ordering and DPORT synchronization corrected after
+  real-device differential testing exposed digest mismatches. Unsupported
+  active SHA input-register overlap is not used by the release path.
 
-### Deliberately retained
+### Pool statistics, TLS and networking
 
-- The visible UI and its refresh behavior are unchanged.
-- The current one-hardware-worker plus one-software-worker mining architecture
-  is retained. Compiler, affinity, dual-software, and hardware-midstate changes
-  require physical timing before they can be selected safely.
+- Replaced the display's direct Public Pool fetch with a bounded, cached,
+  provider-based statistics task and explicit stale/error/backoff behavior.
+- Updated Helios to the deployed `/api/users/<address>` route and current
+  response structure. Best Ever is an account-level submitted-share metric;
+  Total Hash Rate is the pool's recent estimate, not the device counter.
+- Retained CA and hostname verification. Helios uses its dedicated current
+  ISRG Root X2 anchor; compatible other providers retain the generic bundle.
+  NTP validity is checked before HTTPS. There is no insecure fallback.
+- Coordinated TLS and hardware mining through documented SHA/DPORT access and
+  bounded CPU windows, so a statistics request no longer forces the hardware
+  worker into software-only hashing for the whole request.
+- Bounded the large Helios response drain while retaining a verified reusable
+  HTTPS connection. Reduced TLS memory pressure; failures remain isolated from
+  Stratum mining.
 
-### Validation boundary
+### Display, memory and build
 
-- A successful build or host benchmark is not a physical ESP32 hashrate
-  measurement. Hardware throughput, watchdog, Wi-Fi, and pool validation remain
-  required.
+- Corrected a Merkle-root terminator out-of-bounds write, PoolStats TLS task
+  stack sizing and several display-buffer/state issues found during testing.
+- Kept the existing UI style while fitting Helios values in the CYD panel and
+  positioning the startup label `V1.8.3-FX1` clear of QR/logo/status elements.
+- Added build, test, licensing, checksum and source-archive materials for this
+  unofficial fork. The release binary is not rebuilt by the web installer.
 
-## V1.8.3-multipool.1 - 2026-09-10
+### Physically measured result
 
-Unofficial fork based on NerdMiner_v2 V1.8.3.
+On one ESP32_2432S028_2USB, a 448.72-second post-warm-up run completed
+195,645,712 hashes (**436.01 kH/s**) with 227 accepted / 0 rejected shares,
+zero candidate-validation errors and six successful Helios refreshes. The exact
+public application was subsequently browser-flashed and read back byte-for-byte;
+its short 178.633-second measurement completed 78,106,120 hashes
+(**437.24 kH/s**), with 111 accepted / 0 rejected shares and three successful
+Helios refreshes. The stock reference on the same board was approximately
+340–345 kH/s. These are single-device observations, not a promise for other
+boards or networks. See [hardware validation](docs/release/HARDWARE_VALIDATION.md).
 
-### Added
+### Known limitations
 
-- Central pool registry with normalized hostname matching and friendly names.
-- Generic pool statistics snapshot and provider interface.
-- HeliosPool provider using the compact user snapshot endpoint.
-- Separate low-priority statistics service with last-attempt/last-success
-  tracking, stale state, response-size limits, timeouts, and failure backoff.
-- Mozilla-derived ESP x509 certificate bundle and third-party notice.
-- Native deterministic tests and sanitized JSON fixtures.
-- Faithful display render mocks for current, unavailable, and stale states.
+- TLS-time free heap has fallen to a few kilobytes in testing; prolonged uptime
+  and unusual network/certificate responses need continued observation.
+- Only the named classic-ESP32 board, one account/network and short display
+  off/on intervals were physically checked. The former overnight statistics
+  failure was reproduced as an obsolete API route, but multi-day operation
+  after the repair has not been demonstrated.
+- The source retains some development-only guarded experiments for auditability;
+  unsafe SHA register overlap is disabled in the public build. Invalid high
+  experimental hashrates are not release performance.
 
-### Changed
+## Earlier local development history
 
-- The lower dashboard is rendered dynamically instead of using fixed
-  Public-Pool.io branding.
-- The remote metric label is `Best Ever`, matching the selected Helios field.
-- Unknown pools now show their configured hostname and `N/A`; they do not fall
-  back to the Public Pool API.
-- Remote metric values use fixed-size buffers instead of display-frame String
-  allocation.
-
-### Preserved
-
-- The upstream Stratum/mining core and local mining statistics behavior.
-- Existing supported Public Pool-compatible integrations and TESTNET handling.
-- Upstream MIT license and authorship notices.
-
-### Known limitation
-
-- HeliosPool is protected by Cloudflare. Successful access by the classic ESP32
-  TLS/HTTP stack must be confirmed on physical hardware; TLS verification is
-  never disabled.
+The pre-release `multipool` and `perf` candidates were internal checkpoints,
+not separate public FX1 releases. Their implementation, rejected experiments,
+physical failure investigations and validation evidence are summarized in
+[DETAILED_CHANGES.md](docs/DETAILED_CHANGES.md) and the linked technical reports.

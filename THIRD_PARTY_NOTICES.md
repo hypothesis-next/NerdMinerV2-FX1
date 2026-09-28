@@ -29,3 +29,8 @@ respective certificate authorities.
 The bundle format was generated with the ESP-IDF certificate-bundle utility.
 ESP-IDF is provided under the Apache License 2.0 with some components under
 compatible licenses; see https://github.com/espressif/esp-idf.
+
+The certifi 2026.7.22 package's accompanying certificate-bundle license text
+is retained in `LICENSES/certifi-LICENSE.txt` (also included in the release
+package). The MPL 2.0 terms are linked above; these notices do not replace
+the certificate authorities' own terms.

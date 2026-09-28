@@ -1,5 +1,8 @@
 # ESP32_2432S028_2USB hardware validation checklist
 
+> Historical multi-pool bring-up checklist. The completed V1.8.3-FX1 RC1
+> measurements are in [the release validation report](release/HARDWARE_VALIDATION.md).
+
 Use a second/development board and the merged factory binary for the first
 test. Record serial logs, timestamps, dashboard observations, and resets. Do
 not publish Wi-Fi credentials or wallet addresses in logs or issue reports.

@@ -1,56 +1,52 @@
-# NerdMiner v2 Multi-Pool Dashboard
+# NerdMiner V2 FX1 — V1.8.3-FX1 RC1
 
 > **Unofficial modification.** This repository is an independent fork of
 > NerdMiner_v2. It is not an official BitMaker-hub, NerdMiner, HeliosPool, or
 > pool-operator release, and no endorsement or affiliation is implied.
 
-This fork preserves the V1.8.3 Stratum mining implementation and replaces the
-pool dashboard's fixed Public Pool behavior with a provider-based statistics
-layer. The current hardware-test candidate is **V1.8.3-multipool-perf.11-rc.2**; the
-previous **V1.8.3-multipool.1** release remains the rollback baseline.
+This release candidate targets the **ESP32_2432S028_2USB** (classic ESP32,
+4 MB flash). It adds HeliosPool statistics and other pool-specific dashboards,
+mining correctness checks, safer SHA/resource coordination, and display fixes.
+It is an **RC/Beta**, not a general guarantee for every NerdMiner board.
 
-This candidate fixes the deployed Helios API route and secure-TLS/mining resource
-interaction. See [Helios refresh diagnosis](docs/HELIOS_REFRESH_FIX.md) and the
-bundled hardware-test report for exact-binary measurements. Single-board results
-are not a guarantee for every board/network or proof of multi-day stability.
+On one physically tested ESP32_2432S028_2USB, the exact public application
+completed **437.24 kH/s** during a short browser-upgrade smoke test, versus
+approximately **340–345 kH/s** observed with stock firmware on that board.
+An earlier longer FX1 run measured 436.01 kH/s. Results vary with hardware,
+jobs, network and display activity; pool-side estimated hashrate is not a
+measurement of completed device work.
 
-Key behavior:
+Highlights:
 
-- `public-pool.io`, `pool.nerdminers.org`, `pool.sethforprivacy.com`, and
-  `pool.solomining.de` keep their compatible remote statistics integrations.
-- `btc.heliospool.com` uses the deployed user route, extracting compact user
-  metrics and discarding bounded historical data while retaining verified HTTPS.
-- Unknown Stratum hosts continue mining, display their normalized hostname,
-  make no dashboard API request, and show `N/A` for remote-only metrics.
-- Statistics requests run in a separate low-priority task with bounded
-  timeouts, last-good caching, stale state, and exponential failure backoff.
-- The target release artifact is built for `ESP32_2432S028_2USB`.
+- Independently validates candidate Bitcoin SHA-256d and uses full target,
+  generation, nonce-range and hash-accounting safeguards.
+- Supports a secure HeliosPool dashboard (Best Ever, Workers and Total Hash
+  Rate) alongside compatible Public Pool-family statistics providers.
+- Keeps statistics failures separate from Stratum mining and avoids the former
+  large hardware-hashrate collapse during HTTPS refresh.
+- Corrects memory, display and startup-version-label defects while retaining
+  the upstream NerdMiner interface and wallet/reward behavior.
 
-See [multi-pool architecture](docs/MULTIPOOL_ARCHITECTURE.md),
-[build and test instructions](docs/BUILD_AND_TEST.md), and the
-[hardware validation checklist](docs/HARDWARE_VALIDATION.md).
+## Install or update
 
-## Flashing this fork on ESP32_2432S028_2USB
+The prepared [browser installer](docs/index.html) has a recommended
+**Update / Keep My Configuration** path. Once GitHub Pages is enabled, use it
+from a Chromium-based desktop browser over HTTPS. It flashes only the tested
+[application image](docs/release/NerdMinerV2-V1.8.3-FX1-ESP32_2432S028_2USB-application.bin)
+at `0x10000` on a **compatible existing partition layout**, without selecting
+“Erase device”. The same image was byte-verified after a physical browser flash.
 
-For a complete first installation, flash
-`NerdMinerV2-V1.8.3-multipool-perf.11-rc.2-ESP32_2432S028_2USB-factory.bin` at address
-`0x0000`. For an application-only update on a board that already has a
-compatible bootloader and partition table, flash
-`NerdMinerV2-V1.8.3-multipool-perf.11-rc.2-ESP32_2432S028_2USB-firmware.bin` at
-`0x10000`.
+The separate factory image is for deliberate clean installation or recovery;
+**it can replace saved Wi-Fi and mining configuration**. Do not use it for a
+configuration-preserving update. See the [manual flashing guide](docs/release/FLASHING.md)
+and [checksums](docs/release/SHA256SUMS.txt).
 
-Back up the complete flash first and verify the actual application partition.
-Use application-only flashing on a compatible configured board; do not erase
-NVS/SPIFFS or use the factory/web-flasher image to preserve user configuration.
-
-This local test release adds an independent candidate SHA-256d validator, exact
-network-target comparison, full-width job generations, and safer long-running
-hash accounting. The perf.5 hardware-SHA register-overlap experiment remains
-available only behind an explicit development build macro; it is disabled in
-this candidate because ESP-IDF requires SHA_TEXT to remain untouched while the
-engine is busy. The default classic-ESP32 worker uses the documented sequential
-peripheral contract. Consult the exact binary's physical validation report.
-See [performance methodology](docs/PERFORMANCE_TESTING.md).
+Only one board was physically validated. Low free-heap margin during TLS and
+very long-term statistics availability still warrant monitoring. For measured
+results and limits, see [hardware validation](docs/release/HARDWARE_VALIDATION.md).
+For the complete engineering-level stock-vs-FX1 change record, see
+[DETAILED_CHANGES.md](docs/DETAILED_CHANGES.md). A shorter release history is in
+[CHANGELOG.md](CHANGELOG.md).
 
 ---
 

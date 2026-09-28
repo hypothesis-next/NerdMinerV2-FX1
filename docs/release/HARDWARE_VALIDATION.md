@@ -32,11 +32,36 @@ Before the final startup-label-only edit, the same board ran the immediately pre
 
 The unchanged production hardware-SHA path also passed **2,979,747 physical comparisons** during development: 1,800,099 full SHA-256d digests and 1,179,648 unforced exact-filter decisions, with zero mismatches. This includes known headers and nonce boundaries. These comparisons were development diagnostics, not 2.98 million live submitted shares.
 
+## PHYSICALLY TESTED: exact public release bytes through the browser updater
+
+The browser's recommended configuration-preserving installer wrote only the
+already-packaged application at `0x10000`, with **Erase device unchecked**.
+Readback of all 2,160,992 application bytes was byte-for-byte identical to the
+public BIN, SHA-256 `1cb16e3586a2a7cfd5cfc666c21b4102ca9709c81f71dd2fc09052cf0552a3e5`.
+The actual board partition table and SPIFFS region remained byte-identical.
+NVS was not byte-identical: 110 bytes changed on one page as normal records
+were appended; no bytes reverted to erased `0xFF`. Saved configuration loaded
+automatically, Wi-Fi and Helios Stratum connected without setup, and the
+existing mining identity/settings remained in use. This is direct evidence of
+preservation on the tested layout, not a promise for incompatible layouts.
+
+After warm-up, **78,106,120 completed hashes / 178.633 s = 437.24 kH/s**;
+the mean displayed rate was **436.85 kH/s**. The capture observed **111
+accepted / 0 rejected shares**, zero candidate SHA failures, three verified
+Helios HTTP 200 snapshots with numeric metrics, and zero hardware-to-software
+fallback during those refreshes. The three refresh windows averaged 393.46
+kH/s (initial cold), 418.04 kH/s and 434.43 kH/s. No crash, watchdog or
+reconnect loop appeared. The user visually confirmed the dashboard and normal
+mining screen, including recovery after a backlight off/on cycle. The startup
+label had been visually confirmed in the preceding same-source smoke test;
+it was not separately observed during this browser update. The board was left
+running the exact public application.
+
 ## HOST TESTED / VERIFIED BY BUILD
 
 - Independent reference-SHA differential suite: **5,000,000 deterministic cases**, zero mismatches, including known Bitcoin headers, target/endian and early-filter boundaries, candidate corruption, generation/stale behavior and nonce-range/accounting tests.
 - Clean `ESP32_2432S028_2USB` build from commit `33bd54f9077f7b31dd40ee776637dfc1f1df17c9`: PASS. Static RAM 56,380 bytes; reported application flash 2,154,693 bytes; IRAM 110,863 text + 1,027 vectors.
-- The **final clean committed-build application** has SHA-256 `1cb16e3586a2a7cfd5cfc666c21b4102ca9709c81f71dd2fc09052cf0552a3e5`. It was **not** flashed during packaging. Byte comparison against the physically tested FX1 application found only WiFiManager's compile timestamp and derived ELF/image checksums changed. See `BINARY_COMPARISON.md`.
+- The **final clean committed-build application** has SHA-256 `1cb16e3586a2a7cfd5cfc666c21b4102ca9709c81f71dd2fc09052cf0552a3e5`. It was not flashed during packaging, but was later browser-flashed and byte-verified as described above. Comparison against the earlier FX1 application found only WiFiManager's compile timestamp and derived ELF/image checksums changed. See `BINARY_COMPARISON.md`.
 - Factory-image bootloader, partition table, `boot_app0`, and application were byte-compared against the clean build at `0x1000`, `0x8000`, `0xE000`, and `0x10000`, respectively.
 - Source retains verified Helios TLS with CA and hostname checks; no insecure TLS fallback. Six live HTTPS responses succeeded in the FX1 smoke test. This is not a security audit of every third-party dependency.
 

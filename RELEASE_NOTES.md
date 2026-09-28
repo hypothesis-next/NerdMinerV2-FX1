@@ -1,5 +1,8 @@
 # V1.8.3-multipool.1 release notes
 
+> Historical earlier-fork notes. For V1.8.3-FX1 RC1 use the current
+> [changelog](CHANGELOG.md) and [flashing instructions](docs/release/FLASHING.md).
+
 This is an unofficial NerdMiner_v2 modification based on V1.8.3. It is not an
 official or endorsed release of NerdMiner, BitMaker-hub, HeliosPool, or any
 other pool operator.
