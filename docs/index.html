@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
   <title>NerdMiner V2 FX1 — V1.8.3-FX1 RC1 web flasher</title>
-  <meta name="description" content="Unofficial NerdMiner V2 FX1 release candidate for ESP32_2432S028_2USB. Update while keeping compatible existing settings.">
+  <meta name="description" content="Unofficial NerdMiner V2 FX1 firmware fork: measured performance, mining correctness, stability, broader pool support, and a configuration-preserving update.">
   <link rel="icon" type="image/svg+xml" href="./favicon.svg">
   <script type="module" src="https://unpkg.com/esp-web-tools@10.4.0/dist/web/install-button.js?module"></script>
   <style>
@@ -40,6 +40,7 @@
     .factory-panel { padding-top: 1rem; }
     .factory-confirm { display: block; margin: 1rem 0; }
     .factory-install[hidden], [hidden] { display: none !important; }
+    .support code { overflow-wrap: anywhere; word-break: break-word; }
     footer { margin-top: 2.5rem; color: #a9bdd0; font-size: .9rem; }
     @media (max-width: 620px) { .features { columns: 1; } .card { padding: 1rem; } }
   </style>
@@ -49,7 +50,7 @@
   <header>
     <div class="eyebrow">NerdMiner V2 FX1 <span class="tag">RC / Beta</span></div>
     <h1>V1.8.3-FX1 RC1</h1>
-    <p class="lede">An unofficial open-source NerdMiner V2 fork. Physically tested on the <strong>ESP32_2432S028_2USB</strong> (classic ESP32, 4 MB flash). Other variants are not validated.</p>
+    <p class="lede">An unofficial open-source NerdMiner V2 fork advancing performance, correctness, stability, pool support and usability. Physically tested on the <strong>ESP32_2432S028_2USB</strong> (classic ESP32, 4 MB flash). Other variants are not validated.</p>
     <p>Up to <strong>~446 kH/s</strong> measured on our test unit, compared with ~340 kH/s on stock firmware. Results vary by board and setup.</p>
   </header>
 
@@ -98,6 +99,14 @@
       <li>Memory, display and stability fixes</li>
     </ul>
     <p>Read the <a href="./release/CHANGELOG.md">full changelog</a> for technical details.</p>
+  </section>
+
+  <section class="card support" aria-labelledby="support-heading">
+    <h2 id="support-heading">Support FX1 Development</h2>
+    <p>Optional donations help fund firmware development, test hardware and additional NerdMiner boards for broader physical validation. Donations are never required.</p>
+    <p><strong>Bitcoin (BTC)</strong><br><code>bc1qe4fjy02f5h9yhfzxmntk6246pm3whu6vuyvxsz</code></p>
+    <p><strong>Ethereum (ETH)</strong><br><code>0x7A9F37dda7F417625387dEF44268c1CA0B21D792</code></p>
+    <p class="note">Verify the address and network before sending. Cryptocurrency transactions generally cannot be reversed.</p>
   </section>
 
   <nav class="card links" aria-label="Release links">

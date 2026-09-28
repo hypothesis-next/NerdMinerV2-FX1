@@ -1,9 +1,12 @@
 # NerdMiner V2 FX1
 
 An unofficial open-source fork of
-[NerdMiner V2](https://github.com/BitMaker-hub/NerdMiner_v2), focused on
-correct Bitcoin mining and a usable HeliosPool dashboard. FX1 is not an
-official BitMaker-hub, NerdMiner, HeliosPool, or pool-operator release.
+[NerdMiner V2](https://github.com/BitMaker-hub/NerdMiner_v2) that advances the
+firmware beyond the upstream V1.8.3 baseline. FX1 pursues higher real mining
+throughput without sacrificing correctness or stability, alongside broader
+pool support, better dashboards and usability, bug fixes, and continued
+firmware development. FX1 is not an official BitMaker-hub, NerdMiner,
+HeliosPool, or pool-operator release.
 
 ## V1.8.3-FX1 RC1
 
@@ -28,6 +31,12 @@ activity.
 - TLS and mining coexistence that avoids the former large periodic hashrate collapse during statistics refresh.
 - Memory, dashboard layout, startup-label, and configuration-preservation improvements.
 
+These are only the most visible highlights. FX1 also includes many smaller
+correctness, networking, UI, testing, and release-tooling changes. For the
+complete stock V1.8.3 versus FX1 engineering record, including every
+documented changed file and diff block, see
+[DETAILED_CHANGES.md](docs/DETAILED_CHANGES.md).
+
 The mining address, reward destination, and Stratum job ownership remain
 governed by the user's saved configuration.
 
@@ -38,12 +47,14 @@ RC should not be treated as validated for every board supported by upstream.
 
 ## Install / Update
 
-The [browser flasher](docs/index.html) is prepared for GitHub Pages. When
-Pages is available, use **Update / Keep My Configuration** on a compatible
-existing partition layout. It flashes only the
+The [browser flasher](docs/index.html) provides a recommended
+**Update / Keep My Configuration** path for compatible existing installations.
+It flashes only the
 [physically tested application image](docs/release/NerdMinerV2-V1.8.3-FX1-ESP32_2432S028_2USB-application.bin)
 at offset **0x10000**. Do **not** select “Erase device” if you want to keep
-Wi-Fi, mining address, and pool settings.
+Wi-Fi, mining address, and pool settings. On a compatible partition layout,
+those saved settings remain intact. Browser flashing requires an HTTPS-hosted
+page and a Web Serial-capable desktop browser.
 
 The separate factory image is for a clean installation or recovery and
 **may erase existing configuration**. Read the
@@ -65,6 +76,20 @@ margin; very long-term statistics availability and other hardware variants
 still need broader testing. Helios dashboard values depend on Helios's API,
 and pool-side estimated hashrate can differ substantially from locally
 completed work.
+
+## Support FX1 Development
+
+FX1 has involved extensive firmware development, debugging, performance work,
+correctness validation, and physical hardware testing. If FX1 is useful to
+you, optional donations can help fund development tools, test hardware, and
+additional NerdMiner boards for validating future releases across more units
+and revisions. Donations are never required.
+
+- Bitcoin (BTC): `bc1qe4fjy02f5h9yhfzxmntk6246pm3whu6vuyvxsz`
+- Ethereum (ETH): `0x7A9F37dda7F417625387dEF44268c1CA0B21D792`
+
+Verify the address and network before sending. Cryptocurrency transactions
+generally cannot be reversed.
 
 ## Upstream & Credits
 
