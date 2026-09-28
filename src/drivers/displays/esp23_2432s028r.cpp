@@ -566,8 +566,12 @@ void esp32_2432S028R_LoadingScreen(void)
 {
   tft.fillScreen(TFT_BLACK);
   tft.pushImage(0, 33, initWidth, initHeight, initScreen);
+  const uint8_t previousDatum = tft.getTextDatum();
+  tft.setTextColor(TFT_WHITE);
+  tft.setTextDatum(TC_DATUM);
+  tft.drawString(STARTUP_DISPLAY_VERSION, 160, 213, FONT2);
+  tft.setTextDatum(previousDatum);
   tft.setTextColor(TFT_BLACK);
-  tft.drawString(CURRENT_VERSION, 24, 147, FONT2);
   // delay(2000);
   // tft.fillScreen(TFT_BLACK);
   // tft.pushImage(0, 0, initWidth, initHeight, MinerScreen);
