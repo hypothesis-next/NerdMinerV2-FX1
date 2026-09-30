@@ -396,6 +396,7 @@ class Kernel:
         if tls:
             window_total = self.memory[self.statics['shaCpuWindowMicroseconds()::value']]
             assert window_total >= self.window_request_us, 'window time not recorded'
+            assert (window_total > 0) == (self.windows > 0), 'window time booked without a window'
             assert self.memory[self.statics['shaHandshakeWindowMicroseconds()::value']] == (window_total if tls > 1 else 0)
         else:
             assert self.windows == 0, 'CPU window without TLS'
