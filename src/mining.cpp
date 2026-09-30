@@ -1329,9 +1329,9 @@ static constexpr uint32_t CLASSIC_SHA_GROUP_NONCES = 1024;
 
 // Each group of up to CLASSIC_SHA_GROUP_NONCES nonces runs with SHA_TEXT locked
 // and the other CPU stalled. The job generation is written only by the stratum
-// task, which is pinned to the other CPU, so it cannot change inside a group:
-// it is checked once before each group instead of every 256 nonces inside it.
-// The inner loop then carries no per-nonce bookkeeping beyond the early filter.
+// task, which is pinned to the other CPU, so it cannot change while the stall
+// holds: it is checked once per group, after the stall starts, instead of every
+// 256 nonces. The inner loop carries no bookkeeping beyond the early filter.
 static void IRAM_ATTR __attribute__((noinline, optimize("O2")))
 runClassicHardwareSequential(const JobRequest *job,
                                          JobResult *result,
@@ -1345,10 +1345,6 @@ runClassicHardwareSequential(const JobRequest *job,
   result->nonce_count = count;
   while (done < count)
   {
-    if (s_working_generation.load(std::memory_order_acquire) != job->generation) {
-      result->nonce_count = done;
-      return;
-    }
     const uint32_t group = count - done < CLASSIC_SHA_GROUP_NONCES ?
                            count - done : CLASSIC_SHA_GROUP_NONCES;
     uint32_t nonce = first + done;
@@ -1363,6 +1359,12 @@ runClassicHardwareSequential(const JobRequest *job,
     esp_sha_lock_memory_block();
     sha_hal_wait_idle();
     DPORT_STALL_OTHER_CPU_START();
+    if (s_working_generation.load(std::memory_order_acquire) != job->generation) {
+      DPORT_STALL_OTHER_CPU_END();
+      esp_sha_unlock_memory_block();
+      result->nonce_count = done;
+      return;
+    }
     do
     {
       nerd_sha_ll_fill_text_block_sha256(sha_buffer, words);

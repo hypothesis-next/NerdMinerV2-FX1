@@ -19,7 +19,6 @@ static void diagOtherSha(void *)
   s_diag_other_done.store(true);
   vTaskDelete(nullptr);
 }
-static bool s_diag_burst = false;
 static uint32_t s_diag_burst_count = 0;
 struct DiagSample { uint32_t nonce, word; bool hit; uint8_t hash[32]; };
 static DiagSample s_diag_samples[CLASSIC_SHA_GROUP_NONCES];
@@ -93,7 +92,7 @@ void runClassicShaDiagnostics()
     alignas(4) uint8_t buffer[128]={}, hash[32];
     memcpy(buffer,job.raw_header,80); buffer[80]=0x80; buffer[126]=2; buffer[127]=0x80;
     for (unsigned i=0;i<32;++i) reinterpret_cast<uint32_t *>(buffer)[i]=__builtin_bswap32(reinterpret_cast<uint32_t *>(buffer)[i]);
-    s_diag_force_digest=true; s_diag_burst=true;
+    s_diag_force_digest=true;
     for (unsigned b=0;b<11 && !s_diag_errors;++b) {
       uint32_t known; memcpy(&known,job.raw_header+76,4);
       job.nonce_start=b<10 ? boundaries[b] : known;
@@ -107,7 +106,7 @@ void runClassicShaDiagnostics()
     diagFlushBurst(&job);
     Serial.printf("SHA DIAG full header=%u checked=%u errors=%u\n",h,s_diag_checked,s_diag_errors);
     if (s_diag_errors) break;
-    s_diag_force_digest=false; s_diag_burst=true; job.difficulty=0;
+    s_diag_force_digest=false; job.difficulty=0;
     uint32_t completed=0;
     while (completed<131072 && !s_diag_errors) {
       job.nonce_start=0xda54f700U+completed; job.nonce_count=131072-completed;
@@ -123,7 +122,6 @@ void runClassicShaDiagnostics()
     }
     Serial.printf("SHA DIAG filter header=%u completed=%u checked=%u hits=%u errors=%u\n",
       h,completed,s_diag_checked,s_diag_hits,s_diag_errors);
-    s_diag_burst=false;
   }
   }
   releaseClassicSha();

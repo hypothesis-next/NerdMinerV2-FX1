@@ -137,7 +137,8 @@ class Kernel:
         old = self.memory.get(base, 0)
         self.memory[base] = (old & ~(255 << shift)) | ((value & 255) << shift)
 
-    def run(self, header, delay=2, initial_level=0, nonces=1, cancel_after=None, tls=0):
+    def run(self, header, delay=2, initial_level=0, nonces=1, cancel_after=None, tls=0,
+            share_difficulty=0.0):
         self.memory = {self.generation: 19}
         # TLS CPU-window state (ShaResourcePolicy.h): tls=1 record I/O, tls=2 handshake.
         self.memory[self.statics['secureTransportCpuSessions()::sessions']] = int(tls > 0)
@@ -165,7 +166,11 @@ class Kernel:
         self.memory[r[2]] = 19
         self.memory[r[2] + 4] = int.from_bytes(header[76:80], 'little')
         self.memory[r[2] + 8] = nonces
-        self.memory[r[2] + 16] = self.memory[r[2] + 20] = 0  # Job-owned threshold: 0.0.
+        # Job-owned share threshold. 0.0 makes every filter hit a candidate; above
+        # the modelled hit difficulty (1.0) no hit is, so the range must continue.
+        self.memory[r[2] + 16], self.memory[r[2] + 20] = struct.unpack('<II', struct.pack('<d', share_difficulty))
+        for i in range(8):
+            self.memory[r[2] + 332 + 4*i] = 0  # network target: nothing meets it
         self.memory[r[3] + 16] = self.memory[r[3] + 20] = 0
         self.memory[r[3] + 136] = 0
         for i in range(20):
@@ -306,6 +311,10 @@ class Kernel:
                 elif name == 'sha_hal_wait_idle':
                     assert self.memory_locked and not self.busy
                 elif name.startswith('isSha256Valid('): r[10] = int(any(self.digest))
+                elif name.startswith('mining_validation::hashMeetsTarget('):
+                    digest = bytes(self.read_byte(r[10] + i) for i in range(32))
+                    target = bytes(self.read_byte(r[11] + i) for i in range(32))
+                    r[10] = int(int.from_bytes(digest, 'little') <= int.from_bytes(target, 'little'))
                 elif name == 'memcpy':
                     data = [self.read_byte(r[11] + i) for i in range(r[12])]
                     for i, byte in enumerate(data): self.write_byte(r[10] + i, byte)
@@ -315,10 +324,12 @@ class Kernel:
         # The generation can only change while the other CPU runs, so the kernel
         # checks it before each locked group. A change observed after `cancel_after`
         # completed nonces therefore ends the range at the next group boundary.
+        start_nonce = int.from_bytes(header[76:80], 'little')
         expected_count = nonces if cancel_after is None else min(
             nonces, (cancel_after // self.GROUP + 1) * self.GROUP)
         hits_expected = False
-        for i in range(expected_count):
+        candidates = share_difficulty < 1.0
+        for i in range(expected_count if candidates else 0):
             candidate_header = header[:76] + ((int.from_bytes(header[76:80], 'little') + i) & 0xffffffff).to_bytes(4, 'little')
             if hashlib.sha256(hashlib.sha256(candidate_header).digest()).digest()[-2:] == b'\0\0':
                 expected_count = i + 1
@@ -326,7 +337,6 @@ class Kernel:
                 break
         assert len(self.completed) == expected_count
         hits = []
-        start_nonce = int.from_bytes(header[76:80], 'little')
         for i, (actual_header, digest) in enumerate(self.completed):
             expected_header = header[:76] + ((start_nonce + i) & 0xffffffff).to_bytes(4, 'little')
             expected = hashlib.sha256(hashlib.sha256(expected_header).digest()).digest()
@@ -336,11 +346,18 @@ class Kernel:
         assert self.writes == self.WRITES_PER_NONCE * expected_count and self.ps == initial_ps
         # Interrupts stay masked for one locked group: bounded, and full-length
         # except where a filter hit or the range end cuts it short.
-        assert all(0 < g <= self.GROUP for g in self.groups), f'lock held for {max(self.groups)} nonces'
+        assert all(0 <= g <= self.GROUP for g in self.groups), f'lock held for {max(self.groups)} nonces'
         assert sum(self.groups) == expected_count
-        if not hits_expected and cancel_after is None:
-            assert self.groups == [self.GROUP] * (expected_count // self.GROUP) + (
-                [expected_count % self.GROUP] if expected_count % self.GROUP else []), 'irregular groups'
+        if cancel_after is None:
+            wanted, length = [], 0
+            for i in range(expected_count):
+                nonce_header = header[:76] + ((start_nonce + i) & 0xffffffff).to_bytes(4, 'little')
+                length += 1
+                if length == self.GROUP or hashlib.sha256(hashlib.sha256(nonce_header).digest()).digest()[-2:] == b'\0\0':
+                    wanted.append(length)
+                    length = 0
+            if length: wanted.append(length)
+            assert self.groups == wanted, f'irregular groups {self.groups[:8]} != {wanted[:8]}'
         assert not self.other_cpu_stalled and not self.memory_locked
         assert not self.memory_locked
         if tls and cancel_after is None:
@@ -356,8 +373,8 @@ class Kernel:
         hit = bool(hits)
         assert self.digest_reads == expected_count + 7 * len(hits), 'wrong filter branch'
         assert self.memory[0x20001000 + 8] == expected_count, 'wrong completed-nonce count'
-        assert self.read_byte(0x20001000 + 136) == int(hit), 'wrong candidate presence'
-        if hit:
+        assert self.read_byte(0x20001000 + 136) == int(hit and candidates), 'wrong candidate presence'
+        if hit and candidates:
             saved = bytes(self.read_byte(0x20001000 + 56 + i) for i in range(80))
             assert saved in hits, 'candidate header/nonce ownership mismatch'
             assert self.memory[0x20001000 + 4] == int.from_bytes(saved[76:80], 'little')
@@ -393,14 +410,14 @@ def main():
         count, hit = kernel.run(header, i % 5, i % 5, tls=i % 3)
         total += count
         hits += hit
-    for count, cancel_after, start in ((4096, None, 0xfffff000), (16384, None, 0xfffff000),
-                                       (3000, None, 0xfffff123), (4096, -1, 0xfffff000),
-                                       (4096, 0, 0xfffff000), (4096, 30, 0xfffff123),
-                                       (4096, 1023, 0xfffff000), (4096, 1024, 0xfffff123),
-                                       (1024, 0, 0xfffff000)):
+    for count, cancel_after, start, tls in ((4096, None, 0xfffff000, 1), (16384, None, 0xfffff000, 1),
+                                            (3000, None, 0xfffff123, 1), (4096, None, 0xfffff123, 0),
+                                            (4096, -1, 0xfffff000, 1), (4096, 0, 0xfffff000, 1),
+                                            (4096, 30, 0xfffff123, 0), (4096, 1023, 0xfffff000, 1),
+                                            (4096, 1024, 0xfffff123, 1), (1024, 0, 0xfffff000, 1)):
         header = bytes(76) + start.to_bytes(4, 'little')
-        count_instructions, _ = kernel.run(header, 2, 0, count, cancel_after, tls=1)
-        print(f'SIMULATED range: requested={count}, cancel_after={cancel_after}, completed={len(kernel.completed)}, instructions={count_instructions}')
+        count_instructions, _ = kernel.run(header, 2, 0, count, cancel_after, tls=tls)
+        print(f'SIMULATED range: requested={count}, cancel_after={cancel_after}, tls={tls}, completed={len(kernel.completed)}, instructions={count_instructions}')
     # A known real Bitcoin hit inside a range must terminate only its prefix;
     # the next invocation must resume the suffix without losing/counting twice.
     original = headers[0]
@@ -413,6 +430,16 @@ def main():
         done += len(kernel.completed)
     assert done == 32
     print('SIMULATED candidate prefix/suffix: 32 unique nonces, actual historical hit retained.')
+    # Below the share difficulty a filter hit is not a candidate (the common case on a
+    # pool): the range must continue with the NEXT nonce — none skipped or repeated —
+    # with the hit ending its locked group. Hits placed mid-group, on the last nonce of
+    # a group and on the first nonce of a group.
+    hit_nonce = int.from_bytes(original[76:80], 'little')
+    for before, count in ((1, 32), (1023, 2048), (1024, 2048), (0, 5)):
+        header = original[:76] + ((hit_nonce - before) & 0xffffffff).to_bytes(4, 'little')
+        _, hit = kernel.run(header, 2, 0, count, tls=before % 2, share_difficulty=2.0)
+        assert hit and len(kernel.completed) == count
+        print(f'SIMULATED non-candidate hit at offset {before}: {count} nonces completed, groups {kernel.groups[:4]}')
     print(f'SIMULATED emitted Xtensa kernel: {len(headers)} headers, {hits} full-digest hits, zero mismatches.')
     print(f'{Kernel.WRITES_PER_NONCE} writes / 3 compressions / 2 LOADs; idle-before-write and APB/interrupt protection passed.')
     print(f'Instructions exercised: {total}; no hardware cycle/throughput claim.')
