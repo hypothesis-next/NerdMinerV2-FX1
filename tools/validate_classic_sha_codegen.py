@@ -31,6 +31,7 @@ class Kernel:
                 self.sections.append((s[3], s[4], s[5]))
         nm = output([str(toolchain / 'xtensa-esp32-elf-nm.exe'), '-S', '-C', str(elf)])
         self.names = {}
+        self.statics = {}
         helper_ranges = []
         for line in nm.splitlines():
             parts = line.split(maxsplit=3)
@@ -43,6 +44,12 @@ class Kernel:
                     self.size = int(parts[1], 16)
                 if 's_working_generation' in parts[3]:
                     self.generation = int(parts[0], 16)
+                for static in ('secureTransportCpuSessions()::sessions',
+                               'secureTransportHandshakeSessions()::sessions',
+                               'shaCpuWindowMicroseconds()::value',
+                               'shaHandshakeWindowMicroseconds()::value'):
+                    if parts[3] == static:
+                        self.statics[static] = int(parts[0], 16)
                 if 'recordHardwareCandidate(' in parts[3]:
                     helper_ranges.append((int(parts[0], 16), int(parts[1], 16)))
         listing = output([str(toolchain / 'xtensa-esp32-elf-objdump.exe'), '-d', '-C',
@@ -128,8 +135,15 @@ class Kernel:
         old = self.memory.get(base, 0)
         self.memory[base] = (old & ~(255 << shift)) | ((value & 255) << shift)
 
-    def run(self, header, delay=2, initial_level=0, nonces=1, cancel_after=None):
+    def run(self, header, delay=2, initial_level=0, nonces=1, cancel_after=None, tls=0):
         self.memory = {self.generation: 19}
+        # TLS CPU-window state (ShaResourcePolicy.h): tls=1 record I/O, tls=2 handshake.
+        self.memory[self.statics['secureTransportCpuSessions()::sessions']] = int(tls > 0)
+        self.memory[self.statics['secureTransportHandshakeSessions()::sessions']] = int(tls > 1)
+        self.memory[self.statics['shaCpuWindowMicroseconds()::value']] = 0
+        self.memory[self.statics['shaHandshakeWindowMicroseconds()::value']] = 0
+        self.now_us = 1_000_000
+        self.windows = 0
         self.text = [0] * 16
         self.busy = self.phase = self.writes = self.digest_reads = 0
         self.memory_locked = False
@@ -185,6 +199,13 @@ class Kernel:
             elif op == 'mov': value = reg(a[1])
             elif op == 'addi': value = reg(a[1]) + int(a[2], 0)
             elif op == 'add': value = reg(a[1]) + reg(a[2])
+            elif op == 'sub': value = reg(a[1]) - reg(a[2])
+            elif op == 'wsr.scompare1': self.scompare1 = reg(a[0])
+            elif op == 's32c1i':
+                address = reg(a[1]) + int(a[2], 0)
+                old = self.read(address)
+                if old == self.scompare1: self.write(address, reg(a[0]))
+                value = old
             elif op == 'and': value = reg(a[1]) & reg(a[2])
             elif op == 'or': value = reg(a[1]) | reg(a[2])
             elif op == 'srli': value = reg(a[1]) >> int(a[2], 0)
@@ -255,6 +276,16 @@ class Kernel:
                 elif name == 'esp_ipc_isr_release_other_cpu':
                     assert self.memory_locked and self.other_cpu_stalled and not self.busy
                     self.other_cpu_stalled = False
+                elif name in ('esp_timer_get_time', 'esp_timer_impl_get_time'):
+                    self.now_us += 1000
+                    r[10], r[11] = self.now_us & 0xffffffff, self.now_us >> 32
+                elif name == 'delayMicroseconds':
+                    # A TLS CPU window: only with no lock held and the other CPU running.
+                    assert not self.memory_locked and not self.other_cpu_stalled, 'CPU window while locked'
+                    assert self.memory[self.statics['secureTransportCpuSessions()::sessions']], 'window without TLS'
+                    assert 0 < r[10] <= 1500, 'unbounded CPU window'
+                    self.now_us += r[10]
+                    self.windows += 1
                 elif name == 'sha_hal_wait_idle':
                     assert self.memory_locked and not self.busy
                 elif name.startswith('isSha256Valid('): r[10] = int(any(self.digest))
@@ -282,6 +313,16 @@ class Kernel:
         assert self.writes == 40 * expected_count and self.ps == initial_ps
         assert not self.other_cpu_stalled and not self.memory_locked
         assert not self.memory_locked
+        if tls and cancel_after is None:
+            # Every completed group, hit or range end releases the lock and lends a
+            # window; only a generation cancel may return without one.
+            assert self.windows > 0, 'TLS active but no CPU window lent'
+        if tls:
+            window_total = self.memory[self.statics['shaCpuWindowMicroseconds()::value']]
+            assert (window_total > 0) == (self.windows > 0)
+            assert self.memory[self.statics['shaHandshakeWindowMicroseconds()::value']] == (window_total if tls > 1 else 0)
+        else:
+            assert self.windows == 0, 'CPU window without TLS'
         hit = bool(hits)
         assert self.digest_reads == expected_count + 7 * len(hits), 'wrong filter branch'
         assert self.memory[0x20001000 + 8] == expected_count, 'wrong completed-nonce count'
@@ -319,12 +360,12 @@ def main():
     else: raise AssertionError('failed to construct nonce-boundary filter hit')
     hits = total = 0
     for i, header in enumerate(headers):
-        count, hit = kernel.run(header, i % 5, i % 5)
+        count, hit = kernel.run(header, i % 5, i % 5, tls=i % 3)
         total += count
         hits += hit
     for count, cancel_after in ((4096, None), (16384, None), (1024, 0), (1024, 30), (1024, 256)):
         header = bytes(76) + (0xfffff000).to_bytes(4, 'little')
-        count_instructions, _ = kernel.run(header, 2, 0, count, cancel_after)
+        count_instructions, _ = kernel.run(header, 2, 0, count, cancel_after, tls=1)
         print(f'SIMULATED range: requested={count}, cancel_after={cancel_after}, completed={len(kernel.completed)}, instructions={count_instructions}')
     # A known real Bitcoin hit inside a range must terminate only its prefix;
     # the next invocation must resume the suffix without losing/counting twice.
