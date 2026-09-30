@@ -21,6 +21,8 @@ class Kernel:
     TEXT = 0x3ff03000
     GROUP = 1024          # CLASSIC_SHA_GROUP_NONCES
     WRITES_PER_NONCE = 34  # 16 + 16 + words 8 and 15 of the block-3 padding
+    FULL_PADDING_WRITES = 40  # fallback selected by the boot known-answer test
+    CYCLES_PER_INSTRUCTION = 4  # rough, only to give the modelled timer realistic spacing
     APB = 0x3ff40078
 
     def __init__(self, elf, toolchain):
@@ -46,6 +48,8 @@ class Kernel:
                     self.size = int(parts[1], 16)
                 if 's_working_generation' in parts[3]:
                     self.generation = int(parts[0], 16)
+                if parts[3] == 's_classic_full_padding':
+                    self.statics['s_classic_full_padding'] = int(parts[0], 16)
                 for static in ('secureTransportCpuSessions()::sessions',
                                'secureTransportHandshakeSessions()::sessions',
                                'shaCpuWindowMicroseconds()::value',
@@ -86,6 +90,10 @@ class Kernel:
             self.digest_reads += 1
             return self.text[(address - self.TEXT) // 4]
         if address in self.memory:
+            if address == self.generation:
+                # Its only writer runs on the other CPU: a read is meaningful only
+                # once that CPU is stalled for the group it guards.
+                assert self.memory_locked and self.other_cpu_stalled, 'generation read outside the stall'
             if address == self.generation and self.cancel_after is not None and len(self.completed) > self.cancel_after:
                 return 20
             return self.memory[address]
@@ -115,6 +123,10 @@ class Kernel:
                 self.phase = 2
             elif address == self.TEXT + 0x98 and self.phase in (2, 4):
                 self.text[:8] = struct.unpack('>8I', self.digest)
+                if self.load_clobbers:
+                    # A hypothetical chip whose LOAD also disturbs words 9..14 (the
+                    # measured engines leave 8..15 alone; nothing documents it).
+                    self.text[9:15] = [0xdeadbeef] * 6
                 if self.phase == 4: self.completed.append((self.header, self.digest))
                 self.phase += 1
             elif address == self.TEXT + 0x90 and self.phase == 3:
@@ -138,14 +150,19 @@ class Kernel:
         self.memory[base] = (old & ~(255 << shift)) | ((value & 255) << shift)
 
     def run(self, header, delay=2, initial_level=0, nonces=1, cancel_after=None, tls=0,
-            share_difficulty=0.0):
+            share_difficulty=0.0, network_meets=False, full_padding=0, cpi=None, load_clobbers=False):
         self.memory = {self.generation: 19}
         # TLS CPU-window state (ShaResourcePolicy.h): tls=1 record I/O, tls=2 handshake.
         self.memory[self.statics['secureTransportCpuSessions()::sessions']] = int(tls > 0)
         self.memory[self.statics['secureTransportHandshakeSessions()::sessions']] = int(tls > 1)
         self.memory[self.statics['shaCpuWindowMicroseconds()::value']] = 0
         self.memory[self.statics['shaHandshakeWindowMicroseconds()::value']] = 0
-        self.now_us = 1_000_000
+        self.memory[self.statics['s_classic_full_padding']] = full_padding
+        self.extra_us = 0
+        self.load_clobbers = load_clobbers
+        self.cpi = cpi or self.CYCLES_PER_INSTRUCTION
+        self.window_request_us = 0
+        self.timer_log = []
         self.windows = 0
         self.text = [0] * 16
         self.busy = self.phase = self.writes = self.digest_reads = 0
@@ -169,8 +186,8 @@ class Kernel:
         # Job-owned share threshold. 0.0 makes every filter hit a candidate; above
         # the modelled hit difficulty (1.0) no hit is, so the range must continue.
         self.memory[r[2] + 16], self.memory[r[2] + 20] = struct.unpack('<II', struct.pack('<d', share_difficulty))
-        for i in range(8):
-            self.memory[r[2] + 332 + 4*i] = 0  # network target: nothing meets it
+        for i in range(8):  # network target: nothing meets it, or everything does
+            self.memory[r[2] + 332 + 4*i] = 0xffffffff if network_meets else 0
         self.memory[r[3] + 16] = self.memory[r[3] + 20] = 0
         self.memory[r[3] + 136] = 0
         for i in range(20):
@@ -286,6 +303,7 @@ class Kernel:
                 elif name == 'esp_sha_lock_memory_block':
                     assert not self.memory_locked
                     self.memory_locked, self.memory_ps = True, self.ps
+                    self.group_began_us = self.timer_log[-1]
                     self.group_began = len(self.completed)
                     self.ps = (self.ps & ~15) | 3
                 elif name == 'esp_sha_unlock_memory_block':
@@ -299,15 +317,20 @@ class Kernel:
                     assert self.memory_locked and self.other_cpu_stalled and not self.busy
                     self.other_cpu_stalled = False
                 elif name in ('esp_timer_get_time', 'esp_timer_impl_get_time'):
-                    self.now_us += 1000
-                    r[10], r[11] = self.now_us & 0xffffffff, self.now_us >> 32
+                    now = 1_000_000 + self.extra_us + instructions * self.cpi // 240
+                    self.timer_log.append(now)
+                    r[10], r[11] = now & 0xffffffff, now >> 32
                 elif name == 'delayMicroseconds':
-                    # A TLS CPU window: only with no lock held and the other CPU running.
+                    # A TLS CPU window: only with no lock held and the other CPU running,
+                    # half the elapsed group time (from the timer reads the kernel made
+                    # at group start and just after unlock), capped at 1.5 ms.
                     assert not self.memory_locked and not self.other_cpu_stalled, 'CPU window while locked'
                     assert self.memory[self.statics['secureTransportCpuSessions()::sessions']], 'window without TLS'
-                    assert 0 < r[10] <= 1500, 'unbounded CPU window'
-                    self.now_us += r[10]
+                    wanted = min((self.timer_log[-2] - self.group_began_us) // 2, 1500)
+                    assert r[10] == wanted, f'CPU window {r[10]} us, expected {wanted}'
+                    self.extra_us += r[10]
                     self.windows += 1
+                    self.window_request_us += r[10]
                 elif name == 'sha_hal_wait_idle':
                     assert self.memory_locked and not self.busy
                 elif name.startswith('isSha256Valid('): r[10] = int(any(self.digest))
@@ -327,13 +350,11 @@ class Kernel:
         start_nonce = int.from_bytes(header[76:80], 'little')
         expected_count = nonces if cancel_after is None else min(
             nonces, (cancel_after // self.GROUP + 1) * self.GROUP)
-        hits_expected = False
-        candidates = share_difficulty < 1.0
+        candidates = share_difficulty < 1.0 or network_meets
         for i in range(expected_count if candidates else 0):
             candidate_header = header[:76] + ((int.from_bytes(header[76:80], 'little') + i) & 0xffffffff).to_bytes(4, 'little')
             if hashlib.sha256(hashlib.sha256(candidate_header).digest()).digest()[-2:] == b'\0\0':
                 expected_count = i + 1
-                hits_expected = True
                 break
         assert len(self.completed) == expected_count
         hits = []
@@ -343,11 +364,19 @@ class Kernel:
             assert actual_header == expected_header and digest == expected, 'wrong nonce/header'
             if expected[-2:] == b'\0\0': hits.append(expected_header)
         assert self.controls == [0x90, 0x94, 0x98, 0x90, 0x98] * expected_count
-        assert self.writes == self.WRITES_PER_NONCE * expected_count and self.ps == initial_ps
+        per_nonce = self.FULL_PADDING_WRITES if full_padding else self.WRITES_PER_NONCE
+        assert self.writes == per_nonce * expected_count and self.ps == initial_ps
         # Interrupts stay masked for one locked group: bounded, and full-length
         # except where a filter hit or the range end cuts it short.
         assert all(0 <= g <= self.GROUP for g in self.groups), f'lock held for {max(self.groups)} nonces'
         assert sum(self.groups) == expected_count
+        if cancel_after is not None:
+            # Full groups, then (if the range was cut short) one empty lock in which
+            # the stale generation was seen.
+            wanted = [self.GROUP] * (expected_count // self.GROUP) + (
+                [expected_count % self.GROUP] if expected_count % self.GROUP else [])
+            if expected_count < nonces: wanted.append(0)
+            assert self.groups == wanted, f'irregular cancelled groups {self.groups} != {wanted}'
         if cancel_after is None:
             wanted, length = [], 0
             for i in range(expected_count):
@@ -366,7 +395,7 @@ class Kernel:
             assert self.windows > 0, 'TLS active but no CPU window lent'
         if tls:
             window_total = self.memory[self.statics['shaCpuWindowMicroseconds()::value']]
-            assert (window_total > 0) == (self.windows > 0)
+            assert window_total >= self.window_request_us, 'window time not recorded'
             assert self.memory[self.statics['shaHandshakeWindowMicroseconds()::value']] == (window_total if tls > 1 else 0)
         else:
             assert self.windows == 0, 'CPU window without TLS'
@@ -440,6 +469,38 @@ def main():
         _, hit = kernel.run(header, 2, 0, count, tls=before % 2, share_difficulty=2.0)
         assert hit and len(kernel.completed) == count
         print(f'SIMULATED non-candidate hit at offset {before}: {count} nonces completed, groups {kernel.groups[:4]}')
+    # A candidate in a later group returns the completed prefix including the hit.
+    header = original[:76] + ((hit_nonce - 1500) & 0xffffffff).to_bytes(4, 'little')
+    _, hit = kernel.run(header, 2, 0, 2048, tls=1)
+    assert hit and len(kernel.completed) == 1501 and kernel.groups == [1024, 477]
+    # A hit below the share difficulty that still meets the network target is a
+    # block: it must be recorded, not treated as a non-candidate.
+    header = original[:76] + ((hit_nonce - 5) & 0xffffffff).to_bytes(4, 'little')
+    _, hit = kernel.run(header, 2, 0, 16, share_difficulty=2.0, network_meets=True)
+    assert hit and len(kernel.completed) == 6
+    print('SIMULATED candidate in group 2 and network-target-only candidate: recorded.')
+    # Slow groups (a busy bus) must still lend at most 1.5 ms per group.
+    header = bytes(76) + (0xfffff123).to_bytes(4, 'little')
+    kernel.run(header, 2, 0, 3000, tls=2, cpi=16)
+    assert kernel.window_request_us == 3 * 1500, "window cap not applied"
+    print(f'SIMULATED slow groups: windows {kernel.window_request_us} us over {kernel.windows} groups (cap 1500).')
+    # The fallback selected when the boot known-answer test fails: full padding.
+    for i, header in enumerate(headers[:200]):
+        kernel.run(header, i % 5, i % 5, tls=i % 3, full_padding=1)
+    header = bytes(76) + (0xfffff123).to_bytes(4, 'little')
+    kernel.run(header, 2, 0, 3000, tls=1, full_padding=1)
+    print(f'SIMULATED full-padding fallback: {Kernel.FULL_PADDING_WRITES} writes per nonce, 200 headers + 3000-nonce range.')
+    # On a chip whose LOAD disturbed words 9..14 the two-store padding must hash
+    # wrongly (that is what the boot known-answer test detects), and the full-padding
+    # fallback must still be exact.
+    for i, header in enumerate(headers[:50]):
+        kernel.run(header, i % 5, 0, full_padding=1, load_clobbers=True)
+    try:
+        kernel.run(headers[0], 2, 0, 4, load_clobbers=True)
+    except AssertionError:
+        print('SIMULATED LOAD that disturbs words 9..14: two-store padding fails, full padding exact.')
+    else:
+        raise AssertionError('two-store padding passed on a chip whose LOAD disturbs words 9..14')
     print(f'SIMULATED emitted Xtensa kernel: {len(headers)} headers, {hits} full-digest hits, zero mismatches.')
     print(f'{Kernel.WRITES_PER_NONCE} writes / 3 compressions / 2 LOADs; idle-before-write and APB/interrupt protection passed.')
     print(f'Instructions exercised: {total}; no hardware cycle/throughput claim.')
