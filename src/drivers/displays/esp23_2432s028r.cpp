@@ -80,6 +80,25 @@ void getChipInfo(void){
   Serial.println("MHz");  
 }
 
+#ifdef CYD_SCREEN_SLEEP_SECONDS
+// Screen sleep: after CYD_SCREEN_SLEEP_SECONDS without a tap the backlight goes
+// off and no frames are rendered (nor pool statistics fetched), which gives the
+// hardware miner back the time it otherwise yields to this core. The next tap
+// only wakes the screen; it is not treated as a screen command.
+static bool screenAsleep = false;
+static unsigned long lastWakeMillis = 0;
+bool cydScreenAsleep() { return screenAsleep; }
+static void cydSleepScreen() { screenAsleep = true; ledcWrite(0, 0); }
+static void cydWakeScreen(unsigned long now)
+{
+  lastWakeMillis = now;
+  if (screenAsleep) {
+    screenAsleep = false;
+    ledcWrite(0, Settings.Brightness);
+  }
+}
+#endif
+
 void esp32_2432S028R_Init(void)
 { 
   // getChipInfo();  
@@ -111,6 +130,9 @@ void esp32_2432S028R_Init(void)
   ledcSetup(0, 5000, 8);
   ledcAttachPin(TFT_BL, 0);
   ledcWrite(0, Settings.Brightness);
+#ifdef CYD_SCREEN_SLEEP_SECONDS
+  lastWakeMillis = millis();
+#endif
  
   //background.createSprite(WIDTH, HEIGHT); // Background Sprite
   //background.setSwapBytes(true);
@@ -141,6 +163,10 @@ void esp32_2432S028R_Init(void)
 void esp32_2432S028R_AlternateScreenState(void)
 {
   Serial.println("Switching display state");
+#ifdef CYD_SCREEN_SLEEP_SECONDS
+  if (screenAsleep) cydWakeScreen(millis()); else cydSleepScreen();
+  return;
+#endif
   int screen_state_duty = ledcRead(0);
   // Switching the duty cycle for the ledc channel, where the TFT_BL pin is attached.
   if (screen_state_duty > 0) {
@@ -600,6 +626,17 @@ void esp32_2432S028R_DoLedStuff(unsigned long frame)
     { 
       int16_t t_x , t_y;  // To store the touch coordinates
       bool pressed = touch.getXY(t_x, t_y);
+#ifdef CYD_SCREEN_SLEEP_SECONDS
+      if (pressed && screenAsleep) {
+        cydWakeScreen(currentMillis);
+        pressed = false;  // the waking tap is not a screen command
+      } else if (pressed) {
+        lastWakeMillis = currentMillis;
+      } else if (!screenAsleep &&
+                 currentMillis - lastWakeMillis >= CYD_SCREEN_SLEEP_SECONDS * 1000UL) {
+        cydSleepScreen();
+      }
+#endif
       if (pressed) {                        
           if (((t_x > 109)&&(t_x < 211)) && ((t_y > 185)&&(t_y < 241))) {
             bottomScreenBlue ^= true;
