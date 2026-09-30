@@ -19,6 +19,8 @@ def output(command):
 
 class Kernel:
     TEXT = 0x3ff03000
+    GROUP = 1024          # CLASSIC_SHA_GROUP_NONCES
+    WRITES_PER_NONCE = 34  # 16 + 16 + words 8 and 15 of the block-3 padding
     APB = 0x3ff40078
 
     def __init__(self, elf, toolchain):
@@ -154,6 +156,7 @@ class Kernel:
         self.ps = 0x40000 | initial_level
         initial_ps = self.ps
         self.controls = []
+        self.groups = []
         self.completed = []
         self.cancel_after = cancel_after
         self.registers = [0] * 16
@@ -200,6 +203,13 @@ class Kernel:
             elif op == 'addi': value = reg(a[1]) + int(a[2], 0)
             elif op == 'add': value = reg(a[1]) + reg(a[2])
             elif op == 'sub': value = reg(a[1]) - reg(a[2])
+            elif op == 'minu': value = min(reg(a[1]), reg(a[2]))
+            elif op == 'maxu': value = max(reg(a[1]), reg(a[2]))
+            elif op == 'addmi': value = reg(a[1]) + int(a[2], 0)
+            elif op == 'movnez':
+                if reg(a[2]): value = reg(a[1])
+            elif op == 'moveqz':
+                if not reg(a[2]): value = reg(a[1])
             elif op == 'wsr.scompare1': self.scompare1 = reg(a[0])
             elif op == 's32c1i':
                 address = reg(a[1]) + int(a[2], 0)
@@ -223,6 +233,11 @@ class Kernel:
             elif op == 'bgei':
                 signed = reg(a[0]) if reg(a[0]) < 0x80000000 else reg(a[0]) - 0x100000000
                 if signed >= int(a[1], 0): pc = branch(a[2])
+            elif op in ('beqi', 'bnei', 'bltui', 'bgeui'):
+                imm = int(a[1], 0) & 0xffffffff
+                take = {'beqi': reg(a[0]) == imm, 'bnei': reg(a[0]) != imm,
+                        'bltui': reg(a[0]) < imm, 'bgeui': reg(a[0]) >= imm}[op]
+                if take: pc = branch(a[2])
             elif op in ('bltu', 'bgeu', 'bne', 'beq'):
                 if op == 'bltu': take = reg(a[0]) < reg(a[1])
                 elif op == 'bgeu': take = reg(a[0]) >= reg(a[1])
@@ -266,10 +281,12 @@ class Kernel:
                 elif name == 'esp_sha_lock_memory_block':
                     assert not self.memory_locked
                     self.memory_locked, self.memory_ps = True, self.ps
+                    self.group_began = len(self.completed)
                     self.ps = (self.ps & ~15) | 3
                 elif name == 'esp_sha_unlock_memory_block':
                     assert self.memory_locked and not self.busy and not self.other_cpu_stalled
                     self.memory_locked, self.ps = False, self.memory_ps
+                    self.groups.append(len(self.completed) - self.group_began)
                 elif name == 'esp_ipc_isr_stall_other_cpu':
                     assert self.memory_locked and not self.other_cpu_stalled
                     self.other_cpu_stalled = True
@@ -295,11 +312,17 @@ class Kernel:
                 else: raise AssertionError(f'unexpected call {name}')
             else: raise AssertionError(f'unsupported instruction {op} {a}')
             if value is not None: r[int(a[0][1:])] = value & 0xffffffff
-        expected_count = nonces if cancel_after is None else min(nonces, ((cancel_after + 255) // 256) * 256 + 1)
+        # The generation can only change while the other CPU runs, so the kernel
+        # checks it before each locked group. A change observed after `cancel_after`
+        # completed nonces therefore ends the range at the next group boundary.
+        expected_count = nonces if cancel_after is None else min(
+            nonces, (cancel_after // self.GROUP + 1) * self.GROUP)
+        hits_expected = False
         for i in range(expected_count):
             candidate_header = header[:76] + ((int.from_bytes(header[76:80], 'little') + i) & 0xffffffff).to_bytes(4, 'little')
             if hashlib.sha256(hashlib.sha256(candidate_header).digest()).digest()[-2:] == b'\0\0':
                 expected_count = i + 1
+                hits_expected = True
                 break
         assert len(self.completed) == expected_count
         hits = []
@@ -310,7 +333,14 @@ class Kernel:
             assert actual_header == expected_header and digest == expected, 'wrong nonce/header'
             if expected[-2:] == b'\0\0': hits.append(expected_header)
         assert self.controls == [0x90, 0x94, 0x98, 0x90, 0x98] * expected_count
-        assert self.writes == 40 * expected_count and self.ps == initial_ps
+        assert self.writes == self.WRITES_PER_NONCE * expected_count and self.ps == initial_ps
+        # Interrupts stay masked for one locked group: bounded, and full-length
+        # except where a filter hit or the range end cuts it short.
+        assert all(0 < g <= self.GROUP for g in self.groups), f'lock held for {max(self.groups)} nonces'
+        assert sum(self.groups) == expected_count
+        if not hits_expected and cancel_after is None:
+            assert self.groups == [self.GROUP] * (expected_count // self.GROUP) + (
+                [expected_count % self.GROUP] if expected_count % self.GROUP else []), 'irregular groups'
         assert not self.other_cpu_stalled and not self.memory_locked
         assert not self.memory_locked
         if tls and cancel_after is None:
@@ -363,8 +393,12 @@ def main():
         count, hit = kernel.run(header, i % 5, i % 5, tls=i % 3)
         total += count
         hits += hit
-    for count, cancel_after in ((4096, None), (16384, None), (1024, 0), (1024, 30), (1024, 256)):
-        header = bytes(76) + (0xfffff000).to_bytes(4, 'little')
+    for count, cancel_after, start in ((4096, None, 0xfffff000), (16384, None, 0xfffff000),
+                                       (3000, None, 0xfffff123), (4096, -1, 0xfffff000),
+                                       (4096, 0, 0xfffff000), (4096, 30, 0xfffff123),
+                                       (4096, 1023, 0xfffff000), (4096, 1024, 0xfffff123),
+                                       (1024, 0, 0xfffff000)):
+        header = bytes(76) + start.to_bytes(4, 'little')
         count_instructions, _ = kernel.run(header, 2, 0, count, cancel_after, tls=1)
         print(f'SIMULATED range: requested={count}, cancel_after={cancel_after}, completed={len(kernel.completed)}, instructions={count_instructions}')
     # A known real Bitcoin hit inside a range must terminate only its prefix;
@@ -380,7 +414,7 @@ def main():
     assert done == 32
     print('SIMULATED candidate prefix/suffix: 32 unique nonces, actual historical hit retained.')
     print(f'SIMULATED emitted Xtensa kernel: {len(headers)} headers, {hits} full-digest hits, zero mismatches.')
-    print('40 writes / 3 compressions / 2 LOADs; idle-before-write and APB/interrupt protection passed.')
+    print(f'{Kernel.WRITES_PER_NONCE} writes / 3 compressions / 2 LOADs; idle-before-write and APB/interrupt protection passed.')
     print(f'Instructions exercised: {total}; no hardware cycle/throughput claim.')
 
 

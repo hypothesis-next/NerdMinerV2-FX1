@@ -56,14 +56,13 @@ static bool diagFlushBurst(const JobRequest *job)
   if ((s_diag_checked & 4095U)==0) vTaskDelay(1);
   return ok;
 }
-static bool diagCheckNonce(const JobRequest *job, uint32_t nonce,
-                           const uint8_t hash[32], uint32_t word, bool hit)
+// Called inside the locked group (at most CLASSIC_SHA_GROUP_NONCES times);
+// the comparison runs in diagFlushBurst() after the lock is released.
+static void diagRecordNonce(uint32_t nonce, const uint8_t hash[32], uint32_t word, bool hit)
 {
-  if (!s_diag_burst) return diagCompareNonce(job, nonce, hash, word, hit);
   DiagSample &sample = s_diag_samples[s_diag_burst_count++];
   sample.nonce = nonce; sample.word = word; sample.hit = hit;
   if (s_diag_force_digest || hit) memcpy(sample.hash, hash, 32);
-  return s_diag_burst_count < CLASSIC_SHA_GROUP_NONCES || diagFlushBurst(job);
 }
 }
 void runClassicShaDiagnostics()
