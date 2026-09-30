@@ -144,8 +144,9 @@ void poolStatsTask(void *) {
       nextAttemptMs = now + WIFI_RECHECK_MS;
 #ifdef CYD_SCREEN_SLEEP_SECONDS
     } else if (cydScreenAsleep()) {
-      // Nobody can see the panel: skip TLS refreshes. The first loop after a
-      // wake fetches straight away because nextAttemptMs has passed.
+      // Nobody can see the panel: skip TLS refreshes, keeping the deadline
+      // current so the first loop after a wake fetches straight away.
+      nextAttemptMs = now;
 #endif
     } else if (timeReached(now, nextAttemptMs)) {
       const PoolClockAction clockAction = poolStatsClockAction(

@@ -4,6 +4,7 @@
 
 #include <TFT_eSPI.h>
 #include <TFT_eTouch.h>
+#include <atomic>
 #include "media/images_320_170.h"
 #include "media/myFonts.h"
 #include "media/Free_Fonts.h"
@@ -85,17 +86,18 @@ void getChipInfo(void){
 // off and no frames are rendered (nor pool statistics fetched), which gives the
 // hardware miner back the time it otherwise yields to this core. The next tap
 // only wakes the screen; it is not treated as a screen command.
-static bool screenAsleep = false;
-static unsigned long lastWakeMillis = 0;
-bool cydScreenAsleep() { return screenAsleep; }
-static void cydSleepScreen() { screenAsleep = true; ledcWrite(0, 0); }
+// Read by the pool-stats task; written by the monitor task (touch) and the
+// button handler.
+static std::atomic<bool> screenAsleep(false);
+static unsigned long lastWakeMillis = 0;   // last wake or tap
+static unsigned long wokeAtMillis = 0;     // last wake only
+static bool sleepTimerStarted = false;
+bool cydScreenAsleep() { return screenAsleep.load(std::memory_order_relaxed); }
+static void cydSleepScreen() { screenAsleep.store(true); ledcWrite(0, 0); }
 static void cydWakeScreen(unsigned long now)
 {
-  lastWakeMillis = now;
-  if (screenAsleep) {
-    screenAsleep = false;
-    ledcWrite(0, Settings.Brightness);
-  }
+  lastWakeMillis = wokeAtMillis = now;
+  if (screenAsleep.exchange(false)) ledcWrite(0, Settings.Brightness);
 }
 #endif
 
@@ -130,9 +132,6 @@ void esp32_2432S028R_Init(void)
   ledcSetup(0, 5000, 8);
   ledcAttachPin(TFT_BL, 0);
   ledcWrite(0, Settings.Brightness);
-#ifdef CYD_SCREEN_SLEEP_SECONDS
-  lastWakeMillis = millis();
-#endif
  
   //background.createSprite(WIDTH, HEIGHT); // Background Sprite
   //background.setSwapBytes(true);
@@ -164,7 +163,7 @@ void esp32_2432S028R_AlternateScreenState(void)
 {
   Serial.println("Switching display state");
 #ifdef CYD_SCREEN_SLEEP_SECONDS
-  if (screenAsleep) cydWakeScreen(millis()); else cydSleepScreen();
+  if (cydScreenAsleep()) cydWakeScreen(millis()); else cydSleepScreen();
   return;
 #endif
   int screen_state_duty = ledcRead(0);
@@ -627,12 +626,20 @@ void esp32_2432S028R_DoLedStuff(unsigned long frame)
       int16_t t_x , t_y;  // To store the touch coordinates
       bool pressed = touch.getXY(t_x, t_y);
 #ifdef CYD_SCREEN_SLEEP_SECONDS
-      if (pressed && screenAsleep) {
+      if (!sleepTimerStarted) {
+        // Start counting when mining screens start, not during a setup portal.
+        sleepTimerStarted = true;
+        lastWakeMillis = currentMillis;
+      }
+      if (pressed && cydScreenAsleep()) {
         cydWakeScreen(currentMillis);
         pressed = false;  // the waking tap is not a screen command
+      } else if (pressed && currentMillis - wokeAtMillis < 1000UL) {
+        pressed = false;  // the same finger, still down on the next poll
+        lastWakeMillis = currentMillis;
       } else if (pressed) {
         lastWakeMillis = currentMillis;
-      } else if (!screenAsleep &&
+      } else if (!cydScreenAsleep() &&
                  currentMillis - lastWakeMillis >= CYD_SCREEN_SLEEP_SECONDS * 1000UL) {
         cydSleepScreen();
       }
