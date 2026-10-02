@@ -79,7 +79,11 @@ void setup()
   // Idle task that would reset WDT never runs, because core 0 gets fully utilized
   disableCore0WDT();
 #ifdef NERDMINER_SHA_DIAGNOSTICS
+#if defined(CONFIG_IDF_TARGET_ESP32S3) || defined(CONFIG_IDF_TARGET_ESP32C3)
+  runBatchedShaDiagnostics();
+#else
   runClassicShaDiagnostics();
+#endif
   for (;;) delay(1000);
 #endif
   //disableCore1WDT();
@@ -167,6 +171,8 @@ void setup()
     #if defined(CONFIG_IDF_TARGET_ESP32)
     xTaskCreatePinnedToCore(minerWorkerHw, "MinerHw-0", 3584, (void*)0, 3, &minerTask1, 0); // Leave core 1 available to network/TLS tasks.
     //xTaskCreate(minerWorkerSw, "MinerSw-0", 5000, (void*)0, 1, &minerTask1); // Reduced for ESP32 classic
+    #elif defined(CONFIG_IDF_TARGET_ESP32S3) || defined(CONFIG_IDF_TARGET_ESP32C3)
+    xTaskCreate(minerWorkerHw, "MinerHw-0", 6144, (void*)0, 3, &minerTask1); // batched SHA keeps 1 KB of digests on the stack
     #else
     xTaskCreate(minerWorkerHw, "MinerHw-0", 4096, (void*)0, 3, &minerTask1);
     #endif
