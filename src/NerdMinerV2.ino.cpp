@@ -66,11 +66,25 @@ void setup()
       digitalWrite(PIN_ENABLE5V, HIGH);
   #endif
 
+#if ARDUINO_USB_CDC_ON_BOOT && ARDUINO_USB_MODE
+  // Room for a whole stratum line: with the zero TX timeout below, a print larger than the
+  // free buffer space is cut short (core default 256 bytes). Must be set before begin().
+  Serial.setTxBufferSize(2048);
+#endif
 #ifdef MONITOR_SPEED
     Serial.begin(MONITOR_SPEED);
 #else
     Serial.begin(115200);
 #endif //MONITOR_SPEED
+#if ARDUINO_USB_CDC_ON_BOOT
+  // USB-serial console (S3, C3, ...): once a computer enumerates the port, the core waits up
+  // to 100 ms per console write for buffer space. If nothing on the computer reads the port,
+  // every log line stalls the task that prints it and the hashrate drops to ~75 kH/s.
+  // Drop console output instead of waiting. Side effects even with a reader attached: a
+  // print that does not fit the free TX buffer is truncated, and a print racing another
+  // task's print is dropped. Console logs only; mining is unaffected.
+  Serial.setTxTimeoutMs(0);
+#endif
 
   Serial.setTimeout(0);
   delay(SECOND_MS/10);
