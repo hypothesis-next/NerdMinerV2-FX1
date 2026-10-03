@@ -1,0 +1,127 @@
+#pragma once
+#include <atomic>
+#include <stdint.h>
+#include <string.h>
+
+#include "ReferenceSha256.h"
+
+// Platform-independent policy for the classic ESP32 "timed" SHA-256d kernel:
+// which chips may use it, which nonces the runtime net re-hashes in software,
+// and the one-way fallback to the polled kernel. The kernel itself lives in
+// mining.cpp; everything here is exercised by the native test suite.
+namespace classic_kernel {
+
+// Waits of the timed kernel, in CPU cycles at 240 MHz, measured from a
+// `rsr ccount` taken right after the command store. Measured on a classic
+// ESP32 rev 3.1 (CYD) with the other CPU stalled and interrupts masked
+// (our classic bench, 25 M nonces under five loads, 0 wrong):
+//  - START/CONTINUE -> next command: 56 clean, 54 wrong for every nonce.
+//  - LOAD -> next command or digest read: 2 clean, 1 wrong.
+//  - CONTINUE -> block-3 padding store (words 8 and 15): >= 2 clean.
+// All 16 SHA_TEXT words latch within 10 cycles of START/CONTINUE; block-2
+// words after block-1 START and the next nonce's block-1 words 8..15 after
+// block-3 START are safe at 0 cycles. BUSY reads idle 11 cycles after START
+// with the stall, so it is NOT a usable clock and the kernel never polls it.
+constexpr uint32_t kCommandWaitCycles = 64;  // START/CONTINUE -> next command
+constexpr uint32_t kLoadWaitCycles = 6;      // LOAD -> next command / read
+constexpr uint32_t kPaddingWaitCycles = 6;   // CONTINUE -> block-3 padding
+
+// The fixed waits are cycle counts, so they hold only at this clock.
+constexpr uint32_t kRequiredCpuMhz = 240;
+// esp_chip_info_t::revision is the wafer major version on ESP-IDF 4.4.
+constexpr uint32_t kMinimumChipRevision = 3;
+
+inline bool timedKernelEligible(uint32_t cpuMhz, uint32_t chipRevision) {
+  return cpuMhz == kRequiredCpuMhz && chipRevision >= kMinimumChipRevision;
+}
+
+// About one nonce in 4,096 is re-hashed in software, after the locked group.
+// The residue is not a group or range boundary, so the sample is taken from
+// the steady state of the loop, not from its first or last iteration.
+constexpr uint32_t kSampleMask = 4095;
+constexpr uint32_t kSampleResidue = 0x9e5;
+inline bool isSampleNonce(uint32_t nonce) {
+  return (nonce & kSampleMask) == kSampleResidue;
+}
+
+// The word the kernel reads from SHA_TEXT[7] after the final LOAD (H7 of the
+// second SHA-256, as a SHA word), computed with the reference SHA-256d.
+inline uint32_t referenceFinalWord(const uint8_t rawHeader[80], uint32_t nonce) {
+  uint8_t header[80], digest[32];
+  memcpy(header, rawHeader, sizeof(header));
+  memcpy(header + 76, &nonce, sizeof(nonce));  // little-endian, as submitted
+  mining_validation::referenceSha256d(header, sizeof(header), digest);
+  return (static_cast<uint32_t>(digest[28]) << 24) |
+         (static_cast<uint32_t>(digest[29]) << 16) |
+         (static_cast<uint32_t>(digest[30]) << 8) | digest[31];
+}
+
+// A known-answer range starts this many nonces before the block's own nonce,
+// so the kernel must hash and reject them, then stop exactly on it.
+constexpr uint32_t kKnownAnswerLead = 3;
+
+enum class KnownAnswer { Pass, Fail, Cancelled };
+
+// A range cut short by a job change (no nonce hashed, generation moved) says
+// nothing about the kernel; anything else must be exactly the block's hit.
+inline KnownAnswer classifyKnownAnswer(bool hit, uint32_t hitNonce, uint32_t completed,
+                                       uint32_t knownNonce, bool hashMatches,
+                                       bool generationChanged) {
+  if (!hit && completed == 0 && generationChanged) return KnownAnswer::Cancelled;
+  return hit && hitNonce == knownNonce && completed == kKnownAnswerLead + 1 && hashMatches
+             ? KnownAnswer::Pass : KnownAnswer::Fail;
+}
+
+enum class Kernel : uint32_t { Polled = 0, Timed = 1 };
+
+// One-way state: once a known answer or a sample disagrees, the timed kernel
+// stays off until reboot. Counters are read by the monitor on the other CPU.
+class FallbackState {
+ public:
+  // Boot: eligible chips try the timed kernel; its known-answer test decides.
+  void select(bool eligible) {
+    active_.store(static_cast<uint32_t>(eligible ? Kernel::Timed : Kernel::Polled),
+                  std::memory_order_release);
+  }
+  Kernel active() const {
+    return static_cast<Kernel>(active_.load(std::memory_order_acquire));
+  }
+  bool timed() const { return active() == Kernel::Timed; }
+  // A known-answer block failed on the timed kernel.
+  void knownAnswerFailed() { disable(); }
+  // Records one software comparison; returns whether it matched.
+  bool recordSample(bool matched) {
+    samples_.fetch_add(1, std::memory_order_relaxed);
+    if (!matched) disable();
+    return matched;
+  }
+  // Once per new job, while the timed kernel is active.
+  bool jobCheckDue(uint32_t generation) const {
+    return timed() && (!jobChecked_ || checkedGeneration_ != generation);
+  }
+  void jobChecked(uint32_t generation) {
+    checkedGeneration_ = generation;
+    jobChecked_ = true;
+  }
+  uint32_t samples() const { return samples_.load(std::memory_order_relaxed); }
+  uint32_t mismatches() const { return mismatches_.load(std::memory_order_relaxed); }
+  // The kernel reads this word once per locked group.
+  const std::atomic<uint32_t> &activeWord() const { return active_; }
+
+ private:
+  void disable() {
+    mismatches_.fetch_add(1, std::memory_order_relaxed);
+    active_.store(static_cast<uint32_t>(Kernel::Polled), std::memory_order_release);
+  }
+  std::atomic<uint32_t> active_{static_cast<uint32_t>(Kernel::Polled)};
+  std::atomic<uint32_t> samples_{0};
+  std::atomic<uint32_t> mismatches_{0};
+  uint32_t checkedGeneration_ = 0;
+  bool jobChecked_ = false;
+};
+
+inline const char *kernelName(Kernel kernel) {
+  return kernel == Kernel::Timed ? "timed" : "polled";
+}
+
+}  // namespace classic_kernel
