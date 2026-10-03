@@ -7,6 +7,7 @@
 #include "../src/crypto/ReferenceSha256.h"
 #include "../src/crypto/MiningRangePolicy.h"
 #include "../src/crypto/ShaResourcePolicy.h"
+#include "../src/crypto/ClassicKernelPolicy.h"
 #include "../src/ShaTests/nerdSHA256plus.h"
 
 namespace {
@@ -254,6 +255,82 @@ void benchmarkOptimized(uint32_t cases) {
       std::chrono::steady_clock::now() - start).count();
   printf("Host optimized benchmark: %.0f nonce/s; passes=%u\n", cases / seconds, passes);
 }
+// Classic ESP32 timed kernel: gating, runtime-net sampling, known-answer
+// verdicts and the one-way fallback (src/crypto/ClassicKernelPolicy.h).
+void testClassicKernelPolicy() {
+  using namespace classic_kernel;
+  // Waits keep a margin over the bench's clean thresholds (56, 2 and 2 cycles).
+  require(kCommandWaitCycles >= 56 && kLoadWaitCycles >= 2 && kPaddingWaitCycles >= 2,
+          "timed waits below the measured clean thresholds");
+
+  require(timedKernelEligible(240, 3), "240 MHz rev 3 is eligible");
+  require(timedKernelEligible(240, 4), "later revisions are eligible");
+  require(!timedKernelEligible(240, 2) && !timedKernelEligible(240, 1) && !timedKernelEligible(240, 0),
+          "revisions before 3 are not eligible");
+  require(!timedKernelEligible(160, 3) && !timedKernelEligible(80, 3) && !timedKernelEligible(241, 3),
+          "cycle waits are valid at 240 MHz only");
+
+  // Exactly one sample per 4,096 consecutive nonces, wherever the range starts
+  // (including across 2^32), never on a 1,024-nonce group's first or last nonce.
+  for (uint32_t start : {0u, 1u, 0x9e5u, 0x9e6u, 0xfffff000u, 0xffffff00u, 0x7ffffc00u}) {
+    uint32_t samples = 0;
+    for (uint32_t i = 0; i < 4096 * 4; ++i) samples += isSampleNonce(start + i) ? 1 : 0;
+    require(samples == 4, "one sampled nonce per 4,096");
+  }
+  for (uint32_t n = 0; n < 8192; ++n)
+    if (isSampleNonce(n))
+      require((n & 1023U) != 0 && (n & 1023U) != 1023, "sample on a group boundary");
+
+  // The kernel's final word is H7 of the second SHA-256 as a SHA word; vectors
+  // from Python hashlib, independent of the reference implementation.
+  uint8_t zero[80] = {}, genesis[80];
+  require(referenceFinalWord(zero, 0x12345678U) == 0xf72b47baU, "final word of a zero header");
+  require(decodeHex(
+      "010000000000000000000000000000000000000000000000000000000000000000000000"
+      "3ba3edfd7a7b12b27ac72c3e67768f617fc81bc3888a51323a9fb8aa4b1e5e4a"
+      "29ab5f49ffff001d1dac2b7c", genesis, 80), "invalid genesis header");
+  require(referenceFinalWord(genesis, 0x7c2bac1dU) == 0, "genesis final word");
+  require(referenceFinalWord(genesis, 0x7c2bac1eU) == 0x4a7a229bU, "genesis nonce + 1 final word");
+
+  // Known-answer verdicts: only the exact hit after the 3-nonce lead passes; a
+  // range cancelled by a job change before any nonce is inconclusive.
+  const uint32_t known = 0x7c2bac1dU;
+  require(kKnownAnswerLead == 3, "known-answer lead");
+  require(classifyKnownAnswer(true, known, 4, known, true, false) == KnownAnswer::Pass, "exact hit passes");
+  require(classifyKnownAnswer(true, known, 4, known, true, true) == KnownAnswer::Pass, "completed hit passes after a job change");
+  require(classifyKnownAnswer(true, known - 1, 3, known, true, false) == KnownAnswer::Fail, "early false hit fails");
+  require(classifyKnownAnswer(true, known, 3, known, true, false) == KnownAnswer::Fail, "wrong completed count fails");
+  require(classifyKnownAnswer(true, known, 4, known, false, false) == KnownAnswer::Fail, "wrong digest fails");
+  require(classifyKnownAnswer(false, 0xffffffffU, 8, known, false, false) == KnownAnswer::Fail, "missed hit fails");
+  require(classifyKnownAnswer(false, 0xffffffffU, 8, known, false, true) == KnownAnswer::Fail, "missed hit fails despite a job change");
+  require(classifyKnownAnswer(false, 0xffffffffU, 0, known, false, true) == KnownAnswer::Cancelled, "cancelled range is inconclusive");
+  require(classifyKnownAnswer(false, 0xffffffffU, 0, known, false, false) == KnownAnswer::Fail, "empty range without a job change fails");
+
+  FallbackState state;
+  require(state.active() == Kernel::Polled && !state.jobCheckDue(1), "polled until selected");
+  state.select(false);
+  require(!state.timed() && !state.jobCheckDue(1), "ineligible chip stays polled");
+  state.select(true);
+  require(state.timed() && state.activeWord().load() == 1, "eligible chip selects the timed kernel");
+  require(state.jobCheckDue(0) && state.jobCheckDue(7), "first job is checked");
+  state.jobChecked(7);
+  require(!state.jobCheckDue(7) && state.jobCheckDue(8), "once per new job");
+  require(state.recordSample(true) && state.timed(), "matching sample keeps the timed kernel");
+  require(state.samples() == 1 && state.mismatches() == 0, "sample counted");
+  require(!state.recordSample(false), "mismatching sample reported");
+  require(state.active() == Kernel::Polled && state.activeWord().load() == 0, "mismatch selects the polled kernel");
+  require(state.samples() == 2 && state.mismatches() == 1, "mismatch counted");
+  require(state.recordSample(true) && !state.timed(), "a later match does not restore the timed kernel");
+  require(!state.jobCheckDue(9), "no job checks once polled");
+  require(strcmp(kernelName(state.active()), "polled") == 0 && strcmp(kernelName(Kernel::Timed), "timed") == 0,
+          "kernel names");
+
+  FallbackState boot;
+  boot.select(true);
+  boot.knownAnswerFailed();
+  require(!boot.timed() && boot.mismatches() == 1 && boot.samples() == 0, "failed known answer selects polled");
+  puts("Classic timed-kernel policy: gating, sampling, known answers and fallback passed.");
+}
 }  // namespace
 
 int main(int argc, char **argv) {
@@ -293,6 +370,7 @@ int main(int argc, char **argv) {
   testForcedCandidateGate();
   testGenerationAndRanges();
   testCandidateRangeResume();
+  testClassicKernelPolicy();
   testOptimizedDifferential(cases);
   if (argc == 3 && strcmp(argv[2], "--bench") == 0) benchmarkOptimized(cases);
   puts("All mining validation tests passed.");
