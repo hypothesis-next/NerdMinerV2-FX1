@@ -3,6 +3,15 @@
 This is an instruction-level host model, NOT an ESP32 emulator or hardware
 benchmark. It checks register allocation, byte order, padding, the idle-before-
 write contract, protected DPORT reads, and the actual compiled early filter.
+
+Two kernels share the emitted function, chosen per locked group by
+s_classic_kernel. The polled kernel is held to the strict idle-before-write
+contract (BUSY polled after a MEMW, no SHA_TEXT write while busy). The timed
+kernel ("kernel A") is held to the bench-measured timing contract instead,
+counted in modelled CPU cycles read through `rsr ccount`: it may never read
+BUSY, each command and write must come at least the measured-safe number of
+cycles after the previous command, and only the words measured as latched may
+be written while the engine is busy.
 """
 import argparse
 import hashlib
@@ -24,6 +33,18 @@ class Kernel:
     FULL_PADDING_WRITES = 40  # fallback selected by the boot known-answer test
     CYCLES_PER_INSTRUCTION = 4  # rough, only to give the modelled timer realistic spacing
     APB = 0x3ff40078
+    # Timed kernel, in CPU cycles from the command store (W390.1 bench, classic
+    # ESP32 rev 3.1, other CPU stalled; source constants in ClassicKernelPolicy.h):
+    # START/CONTINUE -> next command 56 clean (54 wrong), kept at 64; LOAD -> next
+    # command or digest read 2 clean (1 wrong), kept at 6; CONTINUE -> block-3
+    # padding >= 2 clean, kept at 6. Writes right after block-1 START (any word)
+    # and after block-3 START (words 8..15) were measured safe at 0 cycles.
+    TIMED_COMMAND_WAIT = 64
+    TIMED_LOAD_WAIT = 6
+    TIMED_PADDING_WAIT = 6
+    TIMED_GROUP_PRIME_WRITES = 8  # next-nonce block-1 words 8..15, once per group
+    # Runtime net: the nonce re-hashed in software after its group.
+    SAMPLE_MASK, SAMPLE_RESIDUE = 4095, 0x9e5
 
     def __init__(self, elf, toolchain):
         self.image = elf.read_bytes()
@@ -50,6 +71,8 @@ class Kernel:
                     self.generation = int(parts[0], 16)
                 if parts[3] == 's_classic_full_padding':
                     self.statics['s_classic_full_padding'] = int(parts[0], 16)
+                if parts[3] == 's_classic_kernel':
+                    self.statics['s_classic_kernel'] = int(parts[0], 16)
                 for static in ('secureTransportCpuSessions()::sessions',
                                'secureTransportHandshakeSessions()::sessions',
                                'shaCpuWindowMicroseconds()::value',
@@ -80,11 +103,15 @@ class Kernel:
             assert self.other_cpu_stalled or (self.preread and (self.ps & 15) >= 5), 'unprotected DPORT read'
             self.preread = False
             if address == self.TEXT + 0x9c:
+                assert not self.timed_group, 'BUSY polled by the timed kernel'
                 assert not self.command_needs_barrier, 'BUSY read before command MEMW barrier'
                 if self.busy:
                     self.busy -= 1
                     return 1
                 return 0
+            if self.timed_group:
+                assert self.phase == 5 and self.cycles - self.command_cycle >= self.TIMED_LOAD_WAIT, \
+                    'timed digest read before the final LOAD settled'
             assert not self.busy, 'digest read before idle'
             assert self.memory_locked, 'digest read without shared-memory lock'
             self.digest_reads += 1
@@ -106,10 +133,15 @@ class Kernel:
         value &= 0xffffffff
         if self.TEXT <= address < self.TEXT + 64:
             assert self.memory_locked, 'SHA_TEXT access without shared-memory lock'
+            if self.timed_group:
+                self.check_timed_write((address - self.TEXT) // 4)
             assert not self.busy, 'SHA_TEXT written while BUSY'
             self.text[(address - self.TEXT) // 4] = value
             self.writes += 1
         elif address in (self.TEXT + 0x90, self.TEXT + 0x94, self.TEXT + 0x98):
+            if self.timed_group:
+                assert self.other_cpu_stalled, 'timed kernel command without the other CPU stalled'
+                assert self.timed_engine_idle(), 'timed command before the previous one settled'
             assert not self.busy and value == 1, 'invalid engine command'
             self.controls.append(address - self.TEXT)
             block = struct.pack('>16I', *self.text)
@@ -133,13 +165,43 @@ class Kernel:
                 assert block[32:] == b'\x80' + bytes(23) + (256).to_bytes(8, 'big')
                 assert block[:32] == self.digest
                 self.digest = hashlib.sha256(block[:32]).digest()
+                if self.timed_group and self.timed_fault is not None and \
+                        self.header[76:80] == self.timed_fault.to_bytes(4, 'little'):
+                    # Injected engine fault: the timed kernel's result for this
+                    # nonce is wrong, as a too-short wait would make it.
+                    self.digest = self.digest[:28] + bytes(b ^ 0x5a for b in self.digest[28:])
                 self.phase = 4
             else:
                 raise AssertionError('wrong SHA operation order')
-            self.busy = self.delay
-            self.command_needs_barrier = True
+            if self.timed_group:
+                self.command_cycle, self.command = self.cycles, address - self.TEXT
+            else:
+                self.busy = self.delay
+                self.command_needs_barrier = True
         else:
             self.memory[address] = value
+
+    def timed_wait(self):
+        return self.TIMED_LOAD_WAIT if self.command == 0x98 else self.TIMED_COMMAND_WAIT
+
+    def timed_engine_idle(self):
+        return self.command is None or self.cycles - self.command_cycle >= self.timed_wait()
+
+    def check_timed_write(self, word):
+        # Busy-engine writes are allowed only where the bench measured them safe.
+        if self.timed_engine_idle():
+            return
+        elapsed = self.cycles - self.command_cycle
+        if self.phase == 1:      # block 1 latched: block-2 words at once
+            return
+        if self.phase == 2:      # block 2 compressing: block-3 padding words
+            assert word >= 8, 'timed write of words 0..7 during block 2'
+            assert elapsed >= self.TIMED_PADDING_WAIT, f'block-3 padding {elapsed} cycles after CONTINUE'
+            return
+        if self.phase == 4:      # block 3 latched: next nonce's block-1 words 8..15
+            assert word >= 8, 'timed write of words 0..7 during block 3'
+            return
+        raise AssertionError(f'SHA_TEXT written {elapsed} cycles after LOAD')
 
     def read_byte(self, address):
         return (self.read(address & ~3) >> (8 * (address & 3))) & 255
@@ -150,8 +212,19 @@ class Kernel:
         self.memory[base] = (old & ~(255 << shift)) | ((value & 255) << shift)
 
     def run(self, header, delay=2, initial_level=0, nonces=1, cancel_after=None, tls=0,
-            share_difficulty=0.0, network_meets=False, full_padding=0, cpi=None, load_clobbers=False):
+            share_difficulty=0.0, network_meets=False, full_padding=0, cpi=None, load_clobbers=False,
+            timed=0, timed_fault=None, seed=0):
         self.memory = {self.generation: 19}
+        self.memory[self.statics['s_classic_kernel']] = timed
+        self.timed_fault = timed_fault
+        self.timed_group = False
+        self.cycles = 0
+        self.command, self.command_cycle = None, 0
+        cycle_rng = random.Random(seed)
+        self.group_modes = []
+        self.pending_samples = []
+        self.checked_samples = []
+        self.sample_mismatches = 0
         # TLS CPU-window state (ShaResourcePolicy.h): tls=1 record I/O, tls=2 handshake.
         self.memory[self.statics['secureTransportCpuSessions()::sessions']] = int(tls > 0)
         self.memory[self.statics['secureTransportHandshakeSessions()::sessions']] = int(tls > 1)
@@ -203,6 +276,9 @@ class Kernel:
             op, a, length = self.code[pc]
             pc += length
             instructions += 1
+            # Modelled CPU cycles, as `rsr ccount` reads them: a varying cost per
+            # instruction, so a wait that holds only for one instruction count fails.
+            self.cycles += cycle_rng.choice((1, 1, 1, 2, 3))
             assert instructions < 10000 * nonces, 'kernel failed to terminate'
             value = None
             if op == 'entry': r[1] -= int(a[1], 0)
@@ -215,6 +291,7 @@ class Kernel:
                 r[10:12] = returned
             elif op == 'memw': self.command_needs_barrier = False
             elif op in ('rsync', 'nop'): pass
+            elif op == 'rsr.ccount': value = self.cycles
             elif op == 'l32r': value = self.read(branch(a[1]))
             elif op == 'l32i': value = self.read(reg(a[1]) + int(a[2], 0))
             elif op == 's32i': self.write(reg(a[1]) + int(a[2], 0), reg(a[0]))
@@ -302,19 +379,32 @@ class Kernel:
                     r[10] = ((left > right) - (left < right)) & 0xffffffff
                 elif name == 'esp_sha_lock_memory_block':
                     assert not self.memory_locked
+                    assert not self.pending_samples, 'timed sample not checked before the next group'
+                    self.timed_group = self.memory[self.statics['s_classic_kernel']] == 1
+                    self.group_snapshot = (len(self.completed), len(self.controls), self.writes,
+                                           self.digest_reads, self.busy)
                     self.memory_locked, self.memory_ps = True, self.ps
                     self.group_began_us = self.timer_log[-1]
                     self.group_began = len(self.completed)
                     self.ps = (self.ps & ~15) | 3
                 elif name == 'esp_sha_unlock_memory_block':
                     assert self.memory_locked and not self.busy and not self.other_cpu_stalled
+                    assert not self.timed_group or self.timed_engine_idle(), 'unlocked while the timed engine runs'
                     self.memory_locked, self.ps = False, self.memory_ps
                     self.groups.append(len(self.completed) - self.group_began)
+                    self.group_modes.append(self.timed_group)
+                    if self.timed_group:
+                        first = len(self.completed) - self.groups[-1]
+                        self.pending_samples = [
+                            (int.from_bytes(h[76:80], 'little'), d) for h, d in self.completed[first:]
+                            if int.from_bytes(h[76:80], 'little') & self.SAMPLE_MASK == self.SAMPLE_RESIDUE]
+                    self.timed_group = False
                 elif name == 'esp_ipc_isr_stall_other_cpu':
                     assert self.memory_locked and not self.other_cpu_stalled
                     self.other_cpu_stalled = True
                 elif name == 'esp_ipc_isr_release_other_cpu':
                     assert self.memory_locked and self.other_cpu_stalled and not self.busy
+                    assert not self.timed_group or self.timed_engine_idle(), 'stall released while the timed engine runs'
                     self.other_cpu_stalled = False
                 elif name in ('esp_timer_get_time', 'esp_timer_impl_get_time'):
                     now = 1_000_000 + self.extra_us + instructions * self.cpi // 240
@@ -333,6 +423,30 @@ class Kernel:
                     self.window_request_us += r[10]
                 elif name == 'sha_hal_wait_idle':
                     assert self.memory_locked and not self.busy
+                    assert not self.timed_group or self.timed_engine_idle()
+                elif name.startswith('(anonymous namespace)::checkTimedSample('):
+                    # Software re-hash of the sampled nonce: never inside the group.
+                    assert not self.memory_locked and not self.other_cpu_stalled, 'software sample inside the lock'
+                    nonce, word = r[11], r[12]
+                    assert r[10] == 0x20000000, 'sample checked against another job'
+                    assert self.pending_samples and self.pending_samples[0][0] == nonce, \
+                        f'sampled nonce {nonce:08x} is not the group\'s sample'
+                    engine_digest = self.pending_samples.pop(0)[1]
+                    assert word == int.from_bytes(engine_digest[28:], 'big'), 'sampled word is not the kernel\'s final word'
+                    sample_header = header[:76] + nonce.to_bytes(4, 'little')
+                    reference = hashlib.sha256(hashlib.sha256(sample_header).digest()).digest()
+                    matched = word == int.from_bytes(reference[28:], 'big')
+                    self.checked_samples.append(nonce)
+                    if not matched:
+                        # ClassicKernelPolicy: one-way switch to the polled kernel. The
+                        # kernel must hash this group again; drop its modelled results.
+                        self.memory[self.statics['s_classic_kernel']] = 0
+                        self.sample_mismatches += 1
+                        completed, controls, self.writes, self.digest_reads, _ = self.group_snapshot
+                        del self.completed[completed:], self.controls[controls:]
+                        self.groups.pop()
+                        self.group_modes.pop()
+                    r[10] = int(matched)
                 elif name.startswith('isSha256Valid('): r[10] = int(any(self.digest))
                 elif name.startswith('mining_validation::hashMeetsTarget('):
                     digest = bytes(self.read_byte(r[10] + i) for i in range(32))
@@ -364,8 +478,27 @@ class Kernel:
             assert actual_header == expected_header and digest == expected, 'wrong nonce/header'
             if expected[-2:] == b'\0\0': hits.append(expected_header)
         assert self.controls == [0x90, 0x94, 0x98, 0x90, 0x98] * expected_count
+        assert not self.pending_samples, 'timed sample never checked'
         per_nonce = self.FULL_PADDING_WRITES if full_padding else self.WRITES_PER_NONCE
-        assert self.writes == per_nonce * expected_count and self.ps == initial_ps
+        if not timed:
+            assert not any(self.group_modes), 'timed kernel ran while not selected'
+            assert self.writes == per_nonce * expected_count and self.ps == initial_ps
+        else:
+            assert self.writes == per_nonce * expected_count + self.TIMED_GROUP_PRIME_WRITES * sum(
+                1 for n, t in zip(self.groups, self.group_modes) if t and n) and self.ps == initial_ps
+            # Until a sample mismatch, every group is timed; after it, none is.
+            switched = self.sample_mismatches > 0
+            assert self.memory[self.statics['s_classic_kernel']] == int(not switched)
+            if switched:
+                assert timed_fault is not None and self.sample_mismatches == 1
+                assert timed_fault in self.checked_samples, 'mismatch on a nonce that was not the fault'
+            modes = self.group_modes
+            assert modes == sorted(modes, reverse=True), f'timed kernel resumed after the switch {modes}'
+            expected_samples = [int.from_bytes(h[76:80], 'little') for h, _ in self.completed]
+            expected_samples = [n for n, t in zip(expected_samples, [t for n, t in zip(self.groups, modes) for _ in range(n)])
+                                if t and n & self.SAMPLE_MASK == self.SAMPLE_RESIDUE]
+            assert [n for n in self.checked_samples if n != timed_fault or not switched] == expected_samples, \
+                f'samples checked {self.checked_samples} != {expected_samples}'
         # Interrupts stay masked for one locked group: bounded, and full-length
         # except where a filter hit or the range end cuts it short.
         assert all(0 <= g <= self.GROUP for g in self.groups), f'lock held for {max(self.groups)} nonces'
@@ -409,6 +542,76 @@ class Kernel:
             assert saved in hits, 'candidate header/nonce ownership mismatch'
             assert self.memory[0x20001000 + 4] == int.from_bytes(saved[76:80], 'little')
         return instructions, hit
+
+
+def timed_checks(kernel, headers, original, hit_nonce):
+    """The timed kernel under the same cases as the polled one, plus its runtime net."""
+    hits = total = 0
+    for i, header in enumerate(headers):
+        count, hit = kernel.run(header, i % 5, i % 5, tls=i % 3, timed=1, seed=i)
+        total += count
+        hits += hit
+    for count, cancel_after, start, tls in ((4096, None, 0xfffff000, 1), (16384, None, 0xfffff000, 1),
+                                            (3000, None, 0xfffff123, 1), (4096, None, 0xfffff123, 0),
+                                            (4096, -1, 0xfffff000, 1), (4096, 0, 0xfffff000, 1),
+                                            (4096, 30, 0xfffff123, 0), (4096, 1023, 0xfffff000, 1),
+                                            (4096, 1024, 0xfffff123, 1), (1024, 0, 0xfffff000, 1)):
+        header = bytes(76) + start.to_bytes(4, 'little')
+        kernel.run(header, 2, 0, count, cancel_after, tls=tls, timed=1, seed=count)
+        print(f'SIMULATED timed range: requested={count}, cancel_after={cancel_after}, tls={tls}, '
+              f'completed={len(kernel.completed)}, samples={len(kernel.checked_samples)}, '
+              f'cycles/nonce={kernel.cycles / max(1, len(kernel.completed)):.0f} (modelled)')
+    start = (hit_nonce - 1) & 0xffffffff
+    done = 0
+    while done < 32:
+        header = original[:76] + ((start + done) & 0xffffffff).to_bytes(4, 'little')
+        _, hit = kernel.run(header, 2, 0, 32 - done, timed=1)
+        if done == 0: assert hit and len(kernel.completed) == 2
+        done += len(kernel.completed)
+    assert done == 32
+    for before, count in ((1, 32), (1023, 2048), (1024, 2048), (0, 5)):
+        header = original[:76] + ((hit_nonce - before) & 0xffffffff).to_bytes(4, 'little')
+        _, hit = kernel.run(header, 2, 0, count, tls=before % 2, share_difficulty=2.0, timed=1)
+        assert hit and len(kernel.completed) == count
+    header = original[:76] + ((hit_nonce - 1500) & 0xffffffff).to_bytes(4, 'little')
+    _, hit = kernel.run(header, 2, 0, 2048, tls=1, timed=1)
+    assert hit and len(kernel.completed) == 1501 and kernel.groups == [1024, 477]
+    header = original[:76] + ((hit_nonce - 5) & 0xffffffff).to_bytes(4, 'little')
+    _, hit = kernel.run(header, 2, 0, 16, share_difficulty=2.0, network_meets=True, timed=1)
+    assert hit and len(kernel.completed) == 6
+    print('SIMULATED timed candidate prefix/suffix, non-candidate hits, later-group and network-only candidates.')
+    for i, header in enumerate(headers[:200]):
+        kernel.run(header, 0, i % 5, tls=i % 3, full_padding=1, timed=1, seed=i)
+    header = bytes(76) + (0xfffff123).to_bytes(4, 'little')
+    kernel.run(header, 2, 0, 3000, tls=1, full_padding=1, timed=1)
+    # The timed kernel writes either padding during block 2, BEFORE the first
+    # LOAD, so on a chip whose LOAD disturbed words 9..14 both paddings hash
+    # wrongly: the boot known-answer test must then reject the timed kernel
+    # (the polled kernel's full padding, after LOAD, stays exact; tested above).
+    for padding in (0, 1):
+        try:
+            kernel.run(headers[0], 2, 0, 4, load_clobbers=True, full_padding=padding, timed=1)
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError(f'timed padding {padding} passed on a chip whose LOAD disturbs words 9..14')
+    print('SIMULATED timed full-padding range; both timed paddings fail when LOAD disturbs words 9..14.')
+    # Runtime net: a wrong timed result on a sampled nonce must switch to the
+    # polled kernel for good and hash that whole group again, with nothing lost
+    # or counted twice. The sample sits at range offset 0, mid-group, on the
+    # last and first nonce of a group, in a later group, and on the range's last
+    # nonce; with and without the TLS window.
+    for count, offset, tls in ((4096, 0, 1), (4096, 100, 0), (4096, 1023, 1), (4096, 1024, 0),
+                               (4096, 2533, 1), (4096, 4095, 0), (16384, 2533, 1)):
+        sample = (0xfffff000 & ~Kernel.SAMPLE_MASK) + Kernel.SAMPLE_RESIDUE
+        base = (sample - offset) & 0xffffffff
+        header = bytes(76) + base.to_bytes(4, 'little')
+        kernel.run(header, 2, 0, count, tls=tls, timed=1, timed_fault=sample)
+        assert kernel.sample_mismatches == 1 and kernel.memory[kernel.statics['s_classic_kernel']] == 0
+        assert kernel.group_modes.count(True) == offset // Kernel.GROUP
+        print(f'SIMULATED timed fault at sampled nonce offset {offset}: switched to polled after '
+              f'{kernel.group_modes.count(True)} timed groups, {len(kernel.completed)} nonces exact.')
+    return hits, total
 
 
 def main():
@@ -502,8 +705,10 @@ def main():
         print('SIMULATED LOAD that disturbs words 9..14: two-store padding fails, full padding exact.')
     else:
         raise AssertionError('two-store padding passed on a chip whose LOAD disturbs words 9..14')
+    timed_hits, timed_total = timed_checks(kernel, headers, original, hit_nonce)
     print(f'SIMULATED emitted Xtensa kernel: {len(headers)} headers, {hits} full-digest hits, zero mismatches.')
     print(f'{Kernel.WRITES_PER_NONCE} writes / 3 compressions / 2 LOADs; idle-before-write and APB/interrupt protection passed.')
+    print(f'Timed kernel: {len(headers)} headers, {timed_hits} full-digest hits; instructions exercised: {timed_total}.')
     print(f'Instructions exercised: {total}; no hardware cycle/throughput claim.')
 
 
