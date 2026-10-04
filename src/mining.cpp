@@ -1408,6 +1408,7 @@ runClassicHardwareSequential(const JobRequest *job,
       using classic_kernel::kCommandWaitCycles;
       using classic_kernel::kLoadWaitCycles;
       using classic_kernel::kPaddingWaitCycles;
+      using classic_kernel::kLatchWaitCycles;
       using classic_sha::rawStore;
       using classic_sha::waitCyclesSince;
       constexpr uint32_t START = SHA_256_START_REG - SHA_TEXT_BASE;
@@ -1434,8 +1435,9 @@ runClassicHardwareSequential(const JobRequest *job,
         rawStore<START>(words, 1);
         uint32_t t = classic_sha::cycleCount();
 
-        // All 16 words of block 1 are latched: block 2 goes in immediately.
+        // Block 2 goes in once block 1 is latched (kLatchWaitCycles).
         const uint32_t nonce_be = classic_sha::byteSwap(nonce);
+        waitCyclesSince(t, kLatchWaitCycles);
         rawStore<0>(words, t0);          rawStore<4>(words, t1);
         rawStore<8>(words, t2);          rawStore<12>(words, nonce_be);
         rawStore<16>(words, 0x80000000); rawStore<20>(words, 0);
@@ -1472,7 +1474,8 @@ runClassicHardwareSequential(const JobRequest *job,
         rawStore<START>(words, 1);
         t = classic_sha::cycleCount();
 
-        // Block 3 is latched: the next nonce's block-1 words 8..15 go in now.
+        // The next nonce's block-1 words 8..15 go in once block 3 is latched.
+        waitCyclesSince(t, kLatchWaitCycles);
         rawStore<32>(words, block1[8]);  rawStore<36>(words, block1[9]);
         rawStore<40>(words, block1[10]); rawStore<44>(words, block1[11]);
         rawStore<48>(words, block1[12]); rawStore<52>(words, block1[13]);
@@ -1610,6 +1613,8 @@ struct ClassicKnownAnswerRun {
   bool kernel_hit;          // the kernel stopped on a filter hit
   uint32_t kernel_word;     // its final word (H7), when it did
   uint32_t reference_word;  // the reference H7 for the block's own nonce
+  uint32_t hit_nonce;       // where the kernel stopped, when it hit
+  uint32_t completed;       // nonces it reported done
 };
 
 static ClassicKnownAnswerRun __attribute__((noinline)) classicKnownAnswer(const char *hex)
@@ -1639,6 +1644,8 @@ static ClassicKnownAnswerRun __attribute__((noinline)) classicKnownAnswer(const 
   run.kernel_hit = result.has_candidate;
   run.kernel_word = __builtin_bswap32(reinterpret_cast<const uint32_t *>(result.hash)[7]);
   run.reference_word = __builtin_bswap32(reinterpret_cast<const uint32_t *>(reference)[7]);
+  run.hit_nonce = result.nonce;
+  run.completed = result.nonce_count;
   run.outcome = classic_kernel::classifyKnownAnswer(
       result.has_candidate, result.nonce, result.nonce_count, known,
       memcmp(result.hash, reference, sizeof(reference)) == 0,
@@ -1813,7 +1820,15 @@ void classicShaSelfTest()
                   cpuMhz, chip.revision);
   } else {
     s_classic_kernel.select(true);
-    if (classicKnownAnswers()) {
+    bool timedOk = true;
+    for (const char *hex : kClassicKnownHeaders) {
+      const ClassicKnownAnswerRun run = classicKnownAnswer(hex);
+      if (run.outcome == classic_kernel::KnownAnswer::Pass) continue;
+      timedOk = false;
+      Serial.printf("[SHA] timed known answer failed: block nonce=%08x hit=%d at %08x completed=%u kernel H7=%08x reference H7=%08x\n",
+                    run.nonce, run.kernel_hit, run.hit_nonce, run.completed, run.kernel_word, run.reference_word);
+    }
+    if (timedOk) {
       Serial.println("[SHA] timed kernel passed 3 known blocks; using it");
     } else {
       s_classic_kernel.knownAnswerFailed();

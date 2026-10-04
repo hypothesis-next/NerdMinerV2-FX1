@@ -18,13 +18,16 @@ namespace classic_kernel {
 //  - START/CONTINUE -> next command: 56 clean, 54 wrong for every nonce.
 //  - LOAD -> next command or digest read: 2 clean, 1 wrong.
 //  - CONTINUE -> block-3 padding store (words 8 and 15): >= 2 clean.
-// All 16 SHA_TEXT words latch within 10 cycles of START/CONTINUE; block-2
-// words after block-1 START and the next nonce's block-1 words 8..15 after
-// block-3 START are safe at 0 cycles. BUSY reads idle 11 cycles after START
+// All 16 SHA_TEXT words latch within 10 cycles of START/CONTINUE (bench
+// latch probe). The bench's "0 cycles" still spent one counter read (~4
+// cycles); writing with no wait at all after START gave every nonce wrong in
+// FX1 (2026-10-04), so every write window waits kLatchWaitCycles first. The
+// writes still finish inside the 64-cycle compression, so it costs nothing. BUSY reads idle 11 cycles after START
 // with the stall, so it is NOT a usable clock and the kernel never polls it.
 constexpr uint32_t kCommandWaitCycles = 64;  // START/CONTINUE -> next command
 constexpr uint32_t kLoadWaitCycles = 6;      // LOAD -> next command / read
-constexpr uint32_t kPaddingWaitCycles = 6;   // CONTINUE -> block-3 padding
+constexpr uint32_t kPaddingWaitCycles = 16;  // CONTINUE -> block-3 padding
+constexpr uint32_t kLatchWaitCycles = 16;    // START -> next block's words
 
 // The fixed waits are cycle counts, so they hold only at this clock.
 constexpr uint32_t kRequiredCpuMhz = 240;
