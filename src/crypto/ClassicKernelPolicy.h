@@ -38,13 +38,19 @@ inline bool timedKernelEligible(uint32_t cpuMhz, uint32_t chipRevision) {
   return cpuMhz == kRequiredCpuMhz && chipRevision >= kMinimumChipRevision;
 }
 
-// About one nonce in 4,096 is re-hashed in software, after the locked group.
-// The residue is not a group or range boundary, so the sample is taken from
-// the steady state of the loop, not from its first or last iteration.
-constexpr uint32_t kSampleMask = 4095;
-constexpr uint32_t kSampleResidue = 0x9e5;
-inline bool isSampleNonce(uint32_t nonce) {
-  return (nonce & kSampleMask) == kSampleResidue;
+// About one nonce in 4,096 is re-hashed in software, after the locked group:
+// one locked group in 4 is sampled, at an offset that rotates over all 1,024
+// positions (the stride is odd), so the first and last nonce of a group (which
+// take different write paths) and every nonce just after a stall are covered.
+// groupIndex counts locked groups; an offset at or beyond the group's length
+// (kNoSample, or a group cut short) means no sample in that group.
+constexpr uint32_t kGroupNonces = 1024;  // CLASSIC_SHA_GROUP_NONCES
+constexpr uint32_t kSampleGroupEvery = 4;
+constexpr uint32_t kSampleStride = 337;
+constexpr uint32_t kNoSample = kGroupNonces;
+inline uint32_t sampleOffset(uint32_t groupIndex) {
+  if (groupIndex % kSampleGroupEvery != 0) return kNoSample;
+  return (groupIndex / kSampleGroupEvery * kSampleStride) % kGroupNonces;
 }
 
 // The word the kernel reads from SHA_TEXT[7] after the final LOAD (H7 of the
@@ -77,21 +83,47 @@ inline KnownAnswer classifyKnownAnswer(bool hit, uint32_t hitNonce, uint32_t com
 
 enum class Kernel : uint32_t { Polled = 0, Timed = 1 };
 
-// One-way state: once a known answer or a sample disagrees, the timed kernel
-// stays off until reboot. Counters are read by the monitor on the other CPU.
+// One-way state: once a known answer, a sample or a submitted candidate
+// disagrees, the timed kernel stays off until reboot; nothing can turn it back
+// on. Counters are read by the monitor on the other CPU.
 class FallbackState {
  public:
-  // Boot: eligible chips try the timed kernel; its known-answer test decides.
-  void select(bool eligible) {
-    active_.store(static_cast<uint32_t>(eligible ? Kernel::Timed : Kernel::Polled),
-                  std::memory_order_release);
+  // Boot: an eligible chip runs `count` known answers on the timed kernel
+  // (run(i) -> KnownAnswer) and keeps it only if every one passes. Refused
+  // once the timed kernel has ever been switched off.
+  template <typename RunKnownAnswer>
+  bool enableIfKnownAnswersPass(bool eligible, unsigned count, RunKnownAnswer &&run) {
+    if (!eligible || disabled_.load(std::memory_order_acquire)) return false;
+    active_.store(static_cast<uint32_t>(Kernel::Timed), std::memory_order_release);
+    bool passed = count > 0;
+    for (unsigned i = 0; i < count; ++i)
+      if (run(i) != KnownAnswer::Pass) passed = false;
+    if (!passed) disable();
+    return passed;
+  }
+  // Once per new job while the timed kernel is active: one known answer, the
+  // header rotating over `count`. A check cancelled by a job change is retried
+  // on the next job; a failure switches to the polled kernel.
+  template <typename RunKnownAnswer>
+  void checkJob(uint32_t generation, unsigned count, RunKnownAnswer &&run) {
+    if (!jobCheckDue(generation) || count == 0) return;
+    const KnownAnswer outcome = run(nextHeader_ % count);
+    if (outcome == KnownAnswer::Cancelled) return;
+    nextHeader_ = (nextHeader_ + 1) % count;
+    jobChecked(generation);
+    if (outcome == KnownAnswer::Fail && timed()) disable();
+  }
+  // A candidate failed the pre-submit reference re-check. From the timed
+  // kernel that proves the kernel wrong; returns whether this switched it off.
+  bool invalidCandidate(bool fromTimedKernel) {
+    if (!fromTimedKernel || !timed()) return false;
+    disable();
+    return true;
   }
   Kernel active() const {
     return static_cast<Kernel>(active_.load(std::memory_order_acquire));
   }
   bool timed() const { return active() == Kernel::Timed; }
-  // A known-answer block failed on the timed kernel.
-  void knownAnswerFailed() { disable(); }
   // Records one software comparison; returns whether it matched.
   bool recordSample(bool matched) {
     samples_.fetch_add(1, std::memory_order_relaxed);
@@ -102,24 +134,28 @@ class FallbackState {
   bool jobCheckDue(uint32_t generation) const {
     return timed() && (!jobChecked_ || checkedGeneration_ != generation);
   }
-  void jobChecked(uint32_t generation) {
-    checkedGeneration_ = generation;
-    jobChecked_ = true;
-  }
+  bool everDisabled() const { return disabled_.load(std::memory_order_acquire); }
   uint32_t samples() const { return samples_.load(std::memory_order_relaxed); }
   uint32_t mismatches() const { return mismatches_.load(std::memory_order_relaxed); }
   // The kernel reads this word once per locked group.
   const std::atomic<uint32_t> &activeWord() const { return active_; }
 
  private:
+  void jobChecked(uint32_t generation) {
+    checkedGeneration_ = generation;
+    jobChecked_ = true;
+  }
   void disable() {
+    disabled_.store(true, std::memory_order_release);
     mismatches_.fetch_add(1, std::memory_order_relaxed);
     active_.store(static_cast<uint32_t>(Kernel::Polled), std::memory_order_release);
   }
   std::atomic<uint32_t> active_{static_cast<uint32_t>(Kernel::Polled)};
   std::atomic<uint32_t> samples_{0};
   std::atomic<uint32_t> mismatches_{0};
+  std::atomic<bool> disabled_{false};
   uint32_t checkedGeneration_ = 0;
+  unsigned nextHeader_ = 0;
   bool jobChecked_ = false;
 };
 

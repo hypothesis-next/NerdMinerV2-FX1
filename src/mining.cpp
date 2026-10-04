@@ -179,6 +179,7 @@ struct JobResult
   uint8_t raw_header[80];
   bool has_candidate = false;
   double required_difficulty = 0;
+  bool timed_kernel = false;  // classic ESP32: the candidate came from the timed kernel
 };
 
 static std::mutex s_job_mutex;
@@ -304,6 +305,10 @@ static void MiningJobStop(uint32_t &job_pool, std::map<uint32_t, std::shared_ptr
   job_pool = 0xFFFFFFFF;
   submition_map.clear();
 }
+
+#if defined(HARDWARE_SHA265) && defined(CONFIG_IDF_TARGET_ESP32)
+static void classicCandidateRejected(const JobResult *result);
+#endif
 
 #ifdef RANDOM_NONCE
 uint64_t s_random_state = 1;
@@ -703,6 +708,9 @@ void runStratumWorker(void *name) {
           Serial.print(" reference=");
           for (unsigned i=0; i<32; ++i) Serial.printf("%02x", reference[i]);
           Serial.println();
+#if defined(HARDWARE_SHA265) && defined(CONFIG_IDF_TARGET_ESP32)
+          classicCandidateRejected(res.get());
+#endif
           Serial.print("SHA diagnostic header=");
           for (unsigned i=0; i<80; ++i) Serial.printf("%02x%s", res->raw_header[i], (i&3U)==3U ? " " : "");
           Serial.println();
@@ -1250,6 +1258,19 @@ volatile uint32_t s_classic_full_padding = 0;
 // counters. Selected by classicShaSelfTest(); switches to polled for good on
 // any known-answer or sample mismatch.
 classic_kernel::FallbackState s_classic_kernel;
+// Locked groups started, for the runtime net's rotating sample offset.
+uint32_t s_classic_sample_group = 0;
+static_assert(classic_kernel::kGroupNonces == 1024, "sample schedule assumes 1,024-nonce groups");
+
+// Runtime net (c): a candidate that fails the pre-submit reference re-check
+// and came from the timed kernel proves that kernel wrong. The range was
+// already handed on, so only the kernel is switched (one-way, one line).
+static void __attribute__((noinline)) classicCandidateRejected(const JobResult *result)
+{
+  if (s_classic_kernel.invalidCandidate(result->timed_kernel))
+    Serial.printf("CRITICAL: [SHA] timed kernel produced an invalid candidate nonce=%08x; "
+                  "using the polled kernel until reboot\n", result->nonce);
+}
 
 namespace {
 
@@ -1403,6 +1424,10 @@ runClassicHardwareSequential(const JobRequest *job,
 #endif
     bool sampled = false;
     uint32_t sample_nonce = 0, sample_word = 0;
+    // Runtime net (a): one group in 4 is sampled, at a rotating offset; a
+    // target beyond the group's last nonce means no sample in this group.
+    const uint32_t sample_target =
+        nonce + classic_kernel::sampleOffset(s_classic_sample_group++);
 
     // SHA_TEXT is shared by SHA-1/256/384/512, not only SHA-256 users. Other
     // SHA algorithms cannot start while this critical section is held. Local
@@ -1439,7 +1464,6 @@ runClassicHardwareSequential(const JobRequest *job,
       rawStore<40>(words, block1[10]); rawStore<44>(words, block1[11]);
       rawStore<48>(words, block1[12]); rawStore<52>(words, block1[13]);
       rawStore<56>(words, block1[14]); rawStore<60>(words, block1[15]);
-      const uint32_t group_first = nonce;
       uint32_t final_word = 0;
       do
       {
@@ -1467,7 +1491,7 @@ runClassicHardwareSequential(const JobRequest *job,
         rawStore<56>(words, 0);          rawStore<60>(words, 0x00000280);
         // Free while block 1 compresses: keep the previous nonce's final word
         // if it is the runtime net's sample (the last nonce is checked below).
-        if (nonce != group_first && classic_kernel::isSampleNonce(nonce - 1U)) {
+        if (nonce - 1U == sample_target) {
           sampled = true;
           sample_nonce = nonce - 1U;
           sample_word = final_word;
@@ -1520,7 +1544,7 @@ runClassicHardwareSequential(const JobRequest *job,
 #endif
         ++nonce;
       } while (!passes_filter && nonce != group_end);
-      if (classic_kernel::isSampleNonce(nonce - 1U)) {
+      if (nonce - 1U == sample_target) {
         sampled = true;
         sample_nonce = nonce - 1U;
         sample_word = final_word;
@@ -1611,6 +1635,7 @@ runClassicHardwareSequential(const JobRequest *job,
       recordHardwareCandidate(result, job, nonce - 1U, hash);
       if (result->has_candidate) {
         result->nonce_count = done;
+        result->timed_kernel = timed;
         return;
       }
     }
@@ -1687,20 +1712,17 @@ static bool classicKnownAnswers()
 
 // Runtime net (b): once per new job, one public header through the timed
 // kernel, with the shared engines already reserved by the caller.
-static void classicTimedJobCheck(uint32_t generation)
+// The decision (due, cancelled, failed) is classic_kernel::FallbackState::checkJob.
+static void __attribute__((noinline)) classicTimedJobCheck(uint32_t generation)
 {
-  static unsigned next = 0;
-  const ClassicKnownAnswerRun run = classicKnownAnswer(kClassicKnownHeaders[next]);
-  if (run.outcome == classic_kernel::KnownAnswer::Cancelled)
-    return;  // the job went stale meanwhile; check the next one
-  next = (next + 1) % kClassicKnownHeaderCount;
-  s_classic_kernel.jobChecked(generation);
-  if (run.outcome == classic_kernel::KnownAnswer::Fail && s_classic_kernel.timed()) {
-    s_classic_kernel.knownAnswerFailed();
-    Serial.printf("CRITICAL: [SHA] timed kernel known-answer mismatch nonce=%08x kernel=%s%08x reference=%08x; "
-                  "using the polled kernel until reboot\n", run.nonce,
-                  run.kernel_hit ? "" : "no-hit/", run.kernel_word, run.reference_word);
-  }
+  s_classic_kernel.checkJob(generation, kClassicKnownHeaderCount, [](unsigned header) {
+    const ClassicKnownAnswerRun run = classicKnownAnswer(kClassicKnownHeaders[header]);
+    if (run.outcome == classic_kernel::KnownAnswer::Fail)
+      Serial.printf("CRITICAL: [SHA] timed kernel known-answer mismatch nonce=%08x kernel=%s%08x reference=%08x; "
+                    "using the polled kernel until reboot\n", run.nonce,
+                    run.kernel_hit ? "" : "no-hit/", run.kernel_word, run.reference_word);
+    return run.outcome;
+  });
 }
 
 #if NERDMINER_EXPERIMENTAL_SHA_TEXT_OVERLAP
@@ -1845,22 +1867,16 @@ void classicShaSelfTest()
   if (!classic_kernel::timedKernelEligible(cpuMhz, chip.revision)) {
     Serial.printf("[SHA] timed kernel not eligible (cpu=%u MHz, chip rev %u); polled kernel\n",
                   cpuMhz, chip.revision);
+  } else if (s_classic_kernel.enableIfKnownAnswersPass(true, kClassicKnownHeaderCount, [](unsigned header) {
+               const ClassicKnownAnswerRun run = classicKnownAnswer(kClassicKnownHeaders[header]);
+               if (run.outcome != classic_kernel::KnownAnswer::Pass)
+                 Serial.printf("[SHA] timed known answer failed: block nonce=%08x hit=%d at %08x completed=%u kernel H7=%08x reference H7=%08x\n",
+                               run.nonce, run.kernel_hit, run.hit_nonce, run.completed, run.kernel_word, run.reference_word);
+               return run.outcome;
+             })) {
+    Serial.println("[SHA] timed kernel passed 3 known blocks; using it");
   } else {
-    s_classic_kernel.select(true);
-    bool timedOk = true;
-    for (const char *hex : kClassicKnownHeaders) {
-      const ClassicKnownAnswerRun run = classicKnownAnswer(hex);
-      if (run.outcome == classic_kernel::KnownAnswer::Pass) continue;
-      timedOk = false;
-      Serial.printf("[SHA] timed known answer failed: block nonce=%08x hit=%d at %08x completed=%u kernel H7=%08x reference H7=%08x\n",
-                    run.nonce, run.kernel_hit, run.hit_nonce, run.completed, run.kernel_word, run.reference_word);
-    }
-    if (timedOk) {
-      Serial.println("[SHA] timed kernel passed 3 known blocks; using it");
-    } else {
-      s_classic_kernel.knownAnswerFailed();
-      Serial.println("CRITICAL: [SHA] timed kernel failed known answers; polled kernel until reboot");
-    }
+    Serial.println("CRITICAL: [SHA] timed kernel failed known answers; polled kernel until reboot");
   }
   releaseClassicSha();
 }
@@ -1901,8 +1917,7 @@ void minerWorkerHw(void * task_id)
       } else if (secureTransportActive() || !tryReserveClassicSha()) {
         runSoftwareFallback(job.get(), result.get());
       } else {
-      if (s_classic_kernel.jobCheckDue(job->generation))
-        classicTimedJobCheck(job->generation);
+      classicTimedJobCheck(job->generation);  // once per new job, while timed
 #if NERDMINER_EXPERIMENTAL_SHA_TEXT_OVERLAP
       if (s_hardware_pipeline_enabled.load(std::memory_order_acquire))
       {
