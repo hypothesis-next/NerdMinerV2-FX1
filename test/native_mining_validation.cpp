@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <chrono>
+#include <vector>
 
 #include "../src/crypto/ReferenceSha256.h"
 #include "../src/crypto/MiningRangePolicy.h"
@@ -281,16 +282,25 @@ void testClassicKernelPolicy() {
   require(!timedKernelEligible(160, 3) && !timedKernelEligible(80, 3) && !timedKernelEligible(241, 3),
           "cycle waits are valid at 240 MHz only");
 
-  // Exactly one sample per 4,096 consecutive nonces, wherever the range starts
-  // (including across 2^32), never on a 1,024-nonce group's first or last nonce.
-  for (uint32_t start : {0u, 1u, 0x9e5u, 0x9e6u, 0xfffff000u, 0xffffff00u, 0x7ffffc00u}) {
-    uint32_t samples = 0;
-    for (uint32_t i = 0; i < 4096 * 4; ++i) samples += isSampleNonce(start + i) ? 1 : 0;
-    require(samples == 4, "one sampled nonce per 4,096");
+  // One locked group in 4 is sampled, and over 4,096 consecutive groups (from
+  // any counter value, across 2^32 too) every in-group offset exactly once:
+  // about one nonce in 4,096, including each group's first and last nonce.
+  for (uint32_t first : {0u, 1u, 3u, 0x12345u, 0xfffff000u, 0xffffff01u}) {
+    static uint32_t seen[kGroupNonces];
+    memset(seen, 0, sizeof(seen));
+    uint32_t sampled = 0;
+    for (uint32_t g = 0; g < 4 * kGroupNonces; ++g) {
+      const uint32_t offset = sampleOffset(first + g);
+      if (offset == kNoSample) continue;
+      require(offset < kGroupNonces, "sample offset inside the group");
+      ++seen[offset];
+      ++sampled;
+    }
+    require(sampled == kGroupNonces, "one sampled group in 4");
+    for (uint32_t o = 0; o < kGroupNonces; ++o) require(seen[o] == 1, "every in-group offset sampled once");
   }
-  for (uint32_t n = 0; n < 8192; ++n)
-    if (isSampleNonce(n))
-      require((n & 1023U) != 0 && (n & 1023U) != 1023, "sample on a group boundary");
+  require(sampleOffset(0) == 0 && sampleOffset(1) == kNoSample && sampleOffset(4) == 337,
+          "sample schedule");
 
   // The kernel's final word is H7 of the second SHA-256 as a SHA word; vectors
   // from Python hashlib, independent of the reference implementation.
@@ -317,29 +327,97 @@ void testClassicKernelPolicy() {
   require(classifyKnownAnswer(false, 0xffffffffU, 0, known, false, true) == KnownAnswer::Cancelled, "cancelled range is inconclusive");
   require(classifyKnownAnswer(false, 0xffffffffU, 0, known, false, false) == KnownAnswer::Fail, "empty range without a job change fails");
 
+  // Boot: only an eligible chip whose known answers all pass on the timed
+  // kernel keeps it; each answer runs with the timed kernel selected.
+  unsigned calls = 0;
+  bool ranTimed = true;
   FallbackState state;
-  require(state.active() == Kernel::Polled && !state.jobCheckDue(1), "polled until selected");
-  state.select(false);
-  require(!state.timed() && !state.jobCheckDue(1), "ineligible chip stays polled");
-  state.select(true);
-  require(state.timed() && state.activeWord().load() == 1, "eligible chip selects the timed kernel");
-  require(state.jobCheckDue(0) && state.jobCheckDue(7), "first job is checked");
-  state.jobChecked(7);
-  require(!state.jobCheckDue(7) && state.jobCheckDue(8), "once per new job");
+  auto passAll = [&](unsigned i) { ranTimed = ranTimed && state.timed(); require(i == calls++, "header order"); return KnownAnswer::Pass; };
+  require(state.active() == Kernel::Polled && !state.jobCheckDue(1), "polled until enabled");
+  require(!state.enableIfKnownAnswersPass(false, 3, passAll) && calls == 0 && !state.timed(),
+          "ineligible chip stays polled, no known answers run");
+  require(state.enableIfKnownAnswersPass(true, 3, passAll) && calls == 3 && ranTimed, "known answers run on the timed kernel");
+  require(state.timed() && state.activeWord().load() == 1 && state.mismatches() == 0, "eligible chip enables the timed kernel");
+  for (KnownAnswer bad : {KnownAnswer::Fail, KnownAnswer::Cancelled}) {
+    for (unsigned failing = 0; failing < 3; ++failing) {
+      FallbackState boot;
+      unsigned runs = 0;
+      require(!boot.enableIfKnownAnswersPass(true, 3, [&](unsigned i) {
+                ++runs; return i == failing ? bad : KnownAnswer::Pass; }),
+              "a failed boot known answer is reported");
+      require(!boot.timed() && boot.mismatches() == 1 && boot.everDisabled(), "failed boot known answer selects polled");
+      require(runs == 3, "every boot known answer runs and is logged");
+    }
+  }
+  {
+    FallbackState none;
+    require(!none.enableIfKnownAnswersPass(true, 0, passAll) && !none.timed(), "no known answers, no timed kernel");
+  }
+
+  // Per job: one known answer per new job while timed, rotating headers; a
+  // cancelled check is retried on the next job; a failure switches to polled.
+  std::vector<unsigned> headers;
+  KnownAnswer next = KnownAnswer::Pass;
+  auto jobRun = [&](unsigned i) { headers.push_back(i); return next; };
+  state.checkJob(7, 3, jobRun);
+  require(headers.size() == 1 && headers[0] == 0 && !state.jobCheckDue(7), "first job checked with header 0");
+  state.checkJob(7, 3, jobRun);
+  require(headers.size() == 1, "once per job");
+  next = KnownAnswer::Cancelled;
+  state.checkJob(8, 3, jobRun);
+  require(headers.size() == 2 && headers[1] == 1 && state.jobCheckDue(8) && state.timed(), "cancelled check not counted");
+  next = KnownAnswer::Pass;
+  state.checkJob(9, 3, jobRun);
+  require(headers.size() == 3 && headers[2] == 1 && !state.jobCheckDue(9), "cancelled header retried on the next job");
+  state.checkJob(10, 3, jobRun);
+  state.checkJob(11, 3, jobRun);
+  require(headers.size() == 5 && headers[3] == 2 && headers[4] == 0, "headers rotate");
   require(state.recordSample(true) && state.timed(), "matching sample keeps the timed kernel");
   require(state.samples() == 1 && state.mismatches() == 0, "sample counted");
+  auto alwaysPass = [](unsigned) { return KnownAnswer::Pass; };
+  {
+    FallbackState jobFail;
+    require(jobFail.enableIfKnownAnswersPass(true, 3, alwaysPass), "job-check state enabled");
+    unsigned runs = 0;
+    jobFail.checkJob(1, 3, [&](unsigned) { ++runs; return KnownAnswer::Fail; });
+    require(runs == 1 && !jobFail.timed() && jobFail.mismatches() == 1, "failed job known answer selects polled");
+    jobFail.checkJob(2, 3, [&](unsigned) { ++runs; return KnownAnswer::Pass; });
+    require(runs == 1, "no job checks once polled");
+  }
+
+  // Samples and submitted candidates: any mismatch switches to polled for good.
   require(!state.recordSample(false), "mismatching sample reported");
   require(state.active() == Kernel::Polled && state.activeWord().load() == 0, "mismatch selects the polled kernel");
   require(state.samples() == 2 && state.mismatches() == 1, "mismatch counted");
   require(state.recordSample(true) && !state.timed(), "a later match does not restore the timed kernel");
-  require(!state.jobCheckDue(9), "no job checks once polled");
+  require(!state.jobCheckDue(12), "no job checks once polled");
   require(strcmp(kernelName(state.active()), "polled") == 0 && strcmp(kernelName(Kernel::Timed), "timed") == 0,
           "kernel names");
+  {
+    FallbackState candidate;
+    require(candidate.enableIfKnownAnswersPass(true, 3, alwaysPass), "candidate state enabled");
+    require(!candidate.invalidCandidate(false) && candidate.timed(), "a polled kernel's invalid candidate keeps timed");
+    require(candidate.invalidCandidate(true) && !candidate.timed() && candidate.mismatches() == 1,
+            "a timed kernel's invalid candidate selects polled");
+    require(!candidate.invalidCandidate(true) && candidate.mismatches() == 1, "switched once");
+  }
 
-  FallbackState boot;
-  boot.select(true);
-  boot.knownAnswerFailed();
-  require(!boot.timed() && boot.mismatches() == 1 && boot.samples() == 0, "failed known answer selects polled");
+  // One-way in the type: nothing re-enables the timed kernel after a switch.
+  unsigned refusedRuns = 0;
+  auto counted = [&](unsigned) { ++refusedRuns; return KnownAnswer::Pass; };
+  require(!state.enableIfKnownAnswersPass(true, 3, counted) && !state.timed() && refusedRuns == 0,
+          "re-enable refused after a sample mismatch");
+  {
+    FallbackState afterCandidate;
+    afterCandidate.enableIfKnownAnswersPass(true, 3, alwaysPass);
+    afterCandidate.invalidCandidate(true);
+    require(!afterCandidate.enableIfKnownAnswersPass(true, 3, counted) && !afterCandidate.timed() && refusedRuns == 0,
+            "re-enable refused after an invalid candidate");
+    FallbackState afterBoot;
+    afterBoot.enableIfKnownAnswersPass(true, 3, [](unsigned) { return KnownAnswer::Fail; });
+    require(!afterBoot.enableIfKnownAnswersPass(true, 3, counted) && !afterBoot.timed() && refusedRuns == 0,
+            "re-enable refused after a failed boot known answer");
+  }
   puts("Classic timed-kernel policy: gating, sampling, known answers and fallback passed.");
 }
 // W390 soak comparison (development-only, src/crypto/W390SoakCompare.h): it
