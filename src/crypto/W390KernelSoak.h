@@ -205,8 +205,11 @@ void soakTask(void *)
   }
   bool pass = true;
   for (unsigned l = 0; l < kSoakLoadCount; ++l)
+    // The plan runs whole 1,024-nonce groups, so a load compares the first
+    // multiple of 1,024 at or above kSoakNoncesPerLoad (100,000,768).
     pass = pass && s_soak_results[l].totals.mismatches() == 0 &&
-           s_soak_results[l].totals.compared == kSoakNoncesPerLoad;
+           s_soak_results[l].totals.compared ==
+               (kSoakNoncesPerLoad + CLASSIC_SHA_GROUP_NONCES - 1) / CLASSIC_SHA_GROUP_NONCES * CLASSIC_SHA_GROUP_NONCES;
   Serial.printf("W390 SOAK COMPLETE result=%s", pass ? "PASS" : "FAIL");
   for (unsigned l = 0; l < kSoakLoadCount; ++l) {
     const SoakLoadTotals &r = s_soak_results[l];
