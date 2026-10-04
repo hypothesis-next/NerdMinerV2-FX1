@@ -8,6 +8,7 @@
 #include "../src/crypto/MiningRangePolicy.h"
 #include "../src/crypto/ShaResourcePolicy.h"
 #include "../src/crypto/ClassicKernelPolicy.h"
+#include "../src/crypto/W390SoakCompare.h"
 #include "../src/ShaTests/nerdSHA256plus.h"
 
 namespace {
@@ -341,6 +342,113 @@ void testClassicKernelPolicy() {
   require(!boot.timed() && boot.mismatches() == 1 && boot.samples() == 0, "failed known answer selects polled");
   puts("Classic timed-kernel policy: gating, sampling, known answers and fallback passed.");
 }
+// W390 soak comparison (development-only, src/crypto/W390SoakCompare.h): it
+// must count every kind of kernel error once, and cover every nonce exactly once.
+struct SoakRecord { uint32_t nonce, word; bool hit; uint8_t hash[32]; };
+
+void soakRecords(const uint8_t header[80], uint32_t start, uint32_t count, SoakRecord *out) {
+  for (uint32_t i = 0; i < count; ++i) {
+    uint8_t full[80], digest[32];
+    memcpy(full, header, 80);
+    const uint32_t nonce = start + i;
+    memcpy(full + 76, &nonce, 4);
+    mining_validation::referenceSha256d(full, 80, digest);
+    out[i].nonce = nonce;
+    out[i].word = (uint32_t(digest[28]) << 24) | (uint32_t(digest[29]) << 16) |
+                  (uint32_t(digest[30]) << 8) | digest[31];
+    out[i].hit = digest[30] == 0 && digest[31] == 0;
+    memcpy(out[i].hash, digest, 32);
+  }
+}
+
+struct SoakRun {
+  w390_soak::Totals totals;
+  uint32_t reports = 0;
+  w390_soak::Kind lastKind = w390_soak::Kind::Coverage;
+  uint32_t lastNonce = 0;
+};
+
+SoakRun soakCompare(const uint8_t *header, uint32_t start, uint32_t count,
+                    const SoakRecord *timed, uint32_t timedRecords, uint32_t timedCompleted,
+                    const SoakRecord *polled, uint32_t polledRecords, uint32_t polledCompleted,
+                    uint32_t phase) {
+  SoakRun run;
+  w390_soak::compareGroup(header, start, count, timed, timedRecords, timedCompleted,
+      polled, polledRecords, polledCompleted, phase, run.totals,
+      [&](w390_soak::Kind kind, uint32_t nonce, uint32_t, uint32_t, uint32_t) {
+        ++run.reports; run.lastKind = kind; run.lastNonce = nonce;
+      });
+  return run;
+}
+
+void testW390SoakCompare() {
+  using w390_soak::Kind;
+  static SoakRecord good[1024], timed[1024], polled[1024];
+  uint8_t genesis[80];
+  require(decodeHex(
+      "010000000000000000000000000000000000000000000000000000000000000000000000"
+      "3ba3edfd7a7b12b27ac72c3e67768f617fc81bc3888a51323a9fb8aa4b1e5e4a"
+      "29ab5f49ffff001d1dac2b7c", genesis, 80), "invalid genesis header");
+  const uint32_t start = 0x7c2bac1dU - 500, count = 1024, phase = 5;
+  soakRecords(genesis, start, count, good);
+  auto reset = [&] { memcpy(timed, good, sizeof(good)); memcpy(polled, good, sizeof(good)); };
+
+  reset();
+  SoakRun run = soakCompare(genesis, start, count, timed, count, count, polled, count, count, phase);
+  require(run.totals.mismatches() == 0 && run.reports == 0, "soak: clean group reported a mismatch");
+  require(run.totals.compared == count, "soak: clean group not counted once");
+  require(run.totals.softwareChecked == count / 64, "soak: one nonce in 64 re-hashed");
+  require(run.totals.hits >= 1, "soak: the genesis hit was not seen");
+  const uint32_t cleanHits = run.totals.hits;
+
+  const uint32_t plain = 3, sampled = (phase - start) & 63;  // indices: not sampled / sampled
+  require(((start + plain) & 63) != phase && ((start + sampled) & 63) == phase, "soak: index choice");
+  reset(); timed[plain].word ^= 0x100;
+  run = soakCompare(genesis, start, count, timed, count, count, polled, count, count, phase);
+  require(run.totals.timedPolled == 1 && run.totals.mismatches() == 1 && run.reports == 1 &&
+          run.lastKind == Kind::TimedPolled && run.lastNonce == start + plain, "soak: timed word error");
+  reset(); timed[sampled].word ^= 1;
+  run = soakCompare(genesis, start, count, timed, count, count, polled, count, count, phase);
+  require(run.totals.timedPolled == 1 && run.totals.timedSoftware == 1 && run.totals.polledSoftware == 0,
+          "soak: sampled timed error");
+  reset(); polled[sampled].word ^= 1;
+  run = soakCompare(genesis, start, count, timed, count, count, polled, count, count, phase);
+  require(run.totals.timedPolled == 1 && run.totals.polledSoftware == 1 && run.totals.timedSoftware == 0,
+          "soak: sampled polled error");
+  reset(); timed[sampled].word ^= 1; polled[sampled].word ^= 1;  // both wrong, identically
+  run = soakCompare(genesis, start, count, timed, count, count, polled, count, count, phase);
+  require(run.totals.timedPolled == 0 && run.totals.timedSoftware == 1 && run.totals.polledSoftware == 1,
+          "soak: identical error in both kernels");
+
+  const uint32_t hit = 500;  // the genesis nonce
+  require(good[hit].hit, "soak: genesis nonce is a filter hit");
+  reset(); timed[hit].hash[0] ^= 1;
+  run = soakCompare(genesis, start, count, timed, count, count, polled, count, count, phase);
+  require(run.totals.digest == 1 && run.totals.mismatches() == 1, "soak: timed hit digest error");
+  reset(); polled[hit].hash[5] ^= 1;
+  run = soakCompare(genesis, start, count, timed, count, count, polled, count, count, phase);
+  require(run.totals.digest == 1, "soak: polled hit digest error");
+  reset(); timed[plain].hit = true;  // a false filter hit
+  run = soakCompare(genesis, start, count, timed, count, count, polled, count, count, phase);
+  require(run.totals.digest == 1 && run.totals.hits == cleanHits + 1, "soak: false hit");
+
+  reset();
+  run = soakCompare(genesis, start, count, timed, count - 1, count, polled, count, count, phase);
+  require(run.totals.coverage == 1 && run.totals.compared == 0, "soak: missing record");
+  run = soakCompare(genesis, start, count, timed, count, count, polled, count - 1, count, phase);
+  require(run.totals.coverage == 1 && run.totals.compared == 0, "soak: missing polled record");
+  run = soakCompare(genesis, start, count, timed, count, count - 1, polled, count, count, phase);
+  require(run.totals.coverage == 1 && run.totals.compared == 0, "soak: short completed count");
+  run = soakCompare(genesis, start, count, timed, count, count, polled, count, count + 1, phase);
+  require(run.totals.coverage == 1 && run.totals.compared == 0, "soak: long completed count");
+  reset(); timed[700] = timed[699];  // a nonce hashed twice, one skipped
+  run = soakCompare(genesis, start, count, timed, count, count, polled, count, count, phase);
+  require(run.totals.coverage == 1 && run.totals.compared == 0, "soak: duplicated nonce");
+  reset(); polled[0].nonce += 1;
+  run = soakCompare(genesis, start, count, timed, count, count, polled, count, count, phase);
+  require(run.totals.coverage == 1 && run.totals.compared == 0, "soak: polled nonce out of place");
+  puts("W390 soak comparison: word, software, digest and coverage errors all counted.");
+}
 }  // namespace
 
 int main(int argc, char **argv) {
@@ -381,6 +489,7 @@ int main(int argc, char **argv) {
   testGenerationAndRanges();
   testCandidateRangeResume();
   testClassicKernelPolicy();
+  testW390SoakCompare();
   testOptimizedDifferential(cases);
   if (argc == 3 && strcmp(argv[2], "--bench") == 0) benchmarkOptimized(cases);
   puts("All mining validation tests passed.");
