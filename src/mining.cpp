@@ -1335,6 +1335,14 @@ static void diagRecordNonce(uint32_t nonce, const uint8_t hash[32],
                             uint32_t final_word, bool passes_filter);
 static bool diagFlushBurst(const JobRequest *job);
 #endif
+#ifdef W390_KERNEL_SOAK
+// Development-only: the W390 kernel soak forces the kernel per call (0 polled,
+// 1 timed, -1 the runtime selection); it never touches s_classic_kernel.
+static int32_t s_soak_kernel = -1;
+static inline bool soakKernelForced() { return s_soak_kernel >= 0; }
+#else
+static inline bool soakKernelForced() { return false; }
+#endif
 
 static constexpr uint32_t CLASSIC_SHA_GROUP_NONCES = 1024;
 
@@ -1347,7 +1355,8 @@ checkTimedSample(const JobRequest *job, uint32_t nonce, uint32_t final_word)
   const uint32_t reference = classic_kernel::referenceFinalWord(job->raw_header, nonce);
   if (s_classic_kernel.recordSample(reference == final_word))
     return true;
-  Serial.printf("CRITICAL: [SHA] timed kernel sample mismatch nonce=%08x kernel=%08x reference=%08x; "
+  if (!soakKernelForced())  // the soak reports its own mismatches
+    Serial.printf("CRITICAL: [SHA] timed kernel sample mismatch nonce=%08x kernel=%08x reference=%08x; "
                 "using the polled kernel until reboot\n", nonce, final_word, reference);
   return false;
 }
@@ -1384,8 +1393,14 @@ runClassicHardwareSequential(const JobRequest *job,
     uint32_t nonce = first + done;
     const uint32_t group_end = nonce + group;  // modulo 2^32, compared with !=
     bool passes_filter = false;
+#ifdef W390_KERNEL_SOAK
+    const bool timed = soakKernelForced() ? s_soak_kernel == 1 :
+                       s_classic_kernel.activeWord().load(std::memory_order_acquire) ==
+                       static_cast<uint32_t>(classic_kernel::Kernel::Timed);
+#else
     const bool timed = s_classic_kernel.activeWord().load(std::memory_order_acquire) ==
                        static_cast<uint32_t>(classic_kernel::Kernel::Timed);
+#endif
     bool sampled = false;
     uint32_t sample_nonce = 0, sample_word = 0;
 
@@ -1437,7 +1452,11 @@ runClassicHardwareSequential(const JobRequest *job,
 
         // Block 2 goes in once block 1 is latched (kLatchWaitCycles).
         const uint32_t nonce_be = classic_sha::byteSwap(nonce);
+#ifdef W390_SOAK_BREAK_LATCH
+        // DELIBERATELY BROKEN soak build: no latch wait at all (the 531806c bug).
+#else
         waitCyclesSince(t, kLatchWaitCycles);
+#endif
         rawStore<0>(words, t0);          rawStore<4>(words, t1);
         rawStore<8>(words, t2);          rawStore<12>(words, nonce_be);
         rawStore<16>(words, 0x80000000); rawStore<20>(words, 0);
@@ -1475,7 +1494,11 @@ runClassicHardwareSequential(const JobRequest *job,
         t = classic_sha::cycleCount();
 
         // The next nonce's block-1 words 8..15 go in once block 3 is latched.
+#ifdef W390_SOAK_BREAK_LATCH
+        // DELIBERATELY BROKEN soak build: no latch wait at all (the 531806c bug).
+#else
         waitCyclesSince(t, kLatchWaitCycles);
+#endif
         rawStore<32>(words, block1[8]);  rawStore<36>(words, block1[9]);
         rawStore<40>(words, block1[10]); rawStore<44>(words, block1[11]);
         rawStore<48>(words, block1[12]); rawStore<52>(words, block1[13]);
@@ -1571,15 +1594,16 @@ runClassicHardwareSequential(const JobRequest *job,
       shaCpuWindowMicroseconds().fetch_add(measuredWindowUs, std::memory_order_relaxed);
       if (handshake) shaHandshakeWindowMicroseconds().fetch_add(measuredWindowUs, std::memory_order_relaxed);
     }
-#ifdef NERDMINER_SHA_DIAGNOSTICS
+#if defined(NERDMINER_SHA_DIAGNOSTICS) && !defined(W390_KERNEL_SOAK)
     if (!diagFlushBurst(job)) {
       result->nonce_count = done;
       return;
     }
 #endif
     // Outside the stall and lock. A mismatch makes every result of this group
-    // suspect: hash the same group again with the polled kernel.
-    if (sampled && !checkTimedSample(job, sample_nonce, sample_word)) {
+    // suspect: hash the same group again with the polled kernel (unless the
+    // soak forces the kernel; it compares the group itself).
+    if (sampled && !checkTimedSample(job, sample_nonce, sample_word) && !soakKernelForced()) {
       done = group_began_done;
       continue;
     }
@@ -1753,6 +1777,9 @@ runClassicHardwarePipelined(const JobRequest *job,
 
 #ifdef NERDMINER_SHA_DIAGNOSTICS
 #include "crypto/ClassicShaDiagnostics.h"
+#endif
+#ifdef W390_KERNEL_SOAK
+#include "crypto/W390KernelSoak.h"
 #endif
 
 // TLS may own the SHA-256 engine across network waits. Never wait on that
