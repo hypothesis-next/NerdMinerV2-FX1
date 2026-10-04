@@ -262,6 +262,16 @@ void testClassicKernelPolicy() {
   // Waits keep a margin over the bench's clean thresholds (56, 2 and 2 cycles).
   require(kCommandWaitCycles >= 56 && kLoadWaitCycles >= 2 && kPaddingWaitCycles >= 2,
           "timed waits below the measured clean thresholds");
+  // Busy-engine writes wait for the latch: all words latch within 10 cycles of
+  // START/CONTINUE (bench probe), and no wait at all failed on a rev 3.1 CYD.
+  // Keep a margin over 10, for CONTINUE (padding) as for START.
+  require(kLatchWaitCycles >= 10 + 4, "latch wait without margin over the measured 10 cycles");
+  require(kPaddingWaitCycles >= kLatchWaitCycles, "padding written before CONTINUE has latched");
+  // The writes after the latch (16 block-2 stores, up to 8 padding stores, at
+  // least a cycle each) must still finish inside the 64-cycle compression they
+  // overlap, or the overlap (and the kernel's gain) is gone.
+  require(kLatchWaitCycles + 16 <= kCommandWaitCycles && kPaddingWaitCycles + 8 <= kCommandWaitCycles,
+          "write window does not fit inside the compression");
 
   require(timedKernelEligible(240, 3), "240 MHz rev 3 is eligible");
   require(timedKernelEligible(240, 4), "later revisions are eligible");
