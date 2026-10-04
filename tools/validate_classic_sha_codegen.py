@@ -49,7 +49,23 @@ class Kernel:
     TIMED_PADDING_WAIT = 16  # CONTINUE -> block-3 padding
     TIMED_GROUP_PRIME_WRITES = 8  # next-nonce block-1 words 8..15, once per group
     # Runtime net: the nonce re-hashed in software after its group.
-    SAMPLE_MASK, SAMPLE_RESIDUE = 4095, 0x9e5
+    # One locked group in 4 (by s_classic_sample_group) is sampled, at an offset
+    # rotating by an odd stride over all 1,024 (ClassicKernelPolicy.h).
+    SAMPLE_GROUP_EVERY, SAMPLE_STRIDE = 4, 337
+    RESULT_TIMED_KERNEL = 152  # JobResult::timed_kernel (after required_difficulty)
+
+    @classmethod
+    def sample_offset(cls, group_index):
+        if group_index % cls.SAMPLE_GROUP_EVERY:
+            return None
+        return (group_index // cls.SAMPLE_GROUP_EVERY * cls.SAMPLE_STRIDE) % cls.GROUP
+
+    @classmethod
+    def cursor_for(cls, offset, group_in_range=0):
+        """Initial s_classic_sample_group so that group `group_in_range` (<= 3) of
+        the next range is sampled at `offset`."""
+        k = offset * pow(cls.SAMPLE_STRIDE, -1, cls.GROUP) % cls.GROUP
+        return (cls.SAMPLE_GROUP_EVERY * k - group_in_range) & 0xffffffff
 
     def __init__(self, elf, toolchain):
         self.image = elf.read_bytes()
@@ -78,6 +94,8 @@ class Kernel:
                     self.statics['s_classic_full_padding'] = int(parts[0], 16)
                 if parts[3] == 's_classic_kernel':
                     self.statics['s_classic_kernel'] = int(parts[0], 16)
+                if parts[3] == 's_classic_sample_group':
+                    self.statics['s_classic_sample_group'] = int(parts[0], 16)
                 for static in ('secureTransportCpuSessions()::sessions',
                                'secureTransportHandshakeSessions()::sessions',
                                'shaCpuWindowMicroseconds()::value',
@@ -99,6 +117,26 @@ class Kernel:
                 self.code[int(m[1], 16)] = (m[3].removesuffix('.n'),
                     [p.strip() for p in m[4].split('<')[0].split(',') if p.strip()],
                     len(m[2]) // 2)
+
+    def calls_from(self, elf, toolchain, function):
+        """Names of the functions `function` calls directly (call8 targets)."""
+        nm = output([str(toolchain / 'xtensa-esp32-elf-nm.exe'), '-S', '-C', str(elf)])
+        found = [l.split(maxsplit=3) for l in nm.splitlines()
+                 if len(l.split(maxsplit=3)) == 4 and l.split(maxsplit=3)[3].startswith(function)]
+        assert len(found) == 1, f'{function} not found once in the ELF'
+        start, size = int(found[0][0], 16), int(found[0][1], 16)
+        listing = output([str(toolchain / 'xtensa-esp32-elf-objdump.exe'), '-d', '-C',
+                          f'--start-address={start}', f'--stop-address={start + size}', str(elf)])
+        return set(m[1] for m in re.finditer(r'\scall8\s+[0-9a-f]+ <([^>+]+)>', listing))
+
+    def check_wiring(self, elf, toolchain):
+        """Runtime-net calls that live outside the modelled kernel function: the
+        per-job known answer before each hardware range, and the switch on a
+        candidate that fails the pre-submit reference re-check."""
+        for caller, callee in (('minerWorkerHw(', 'classicTimedJobCheck('),
+                               ('runStratumWorker(', 'classicCandidateRejected(')):
+            calls = self.calls_from(elf, toolchain, caller)
+            assert any(callee in c for c in calls), f'{caller}...) never calls {callee}...)'
 
     def read(self, address):
         if address == self.APB:
@@ -232,7 +270,7 @@ class Kernel:
 
     def run(self, header, delay=2, initial_level=0, nonces=1, cancel_after=None, tls=0,
             share_difficulty=0.0, network_meets=False, full_padding=0, cpi=None, load_clobbers=False,
-            timed=0, timed_fault=None):
+            timed=0, timed_fault=None, sample_group=0):
         self.memory = {self.generation: 19}
         self.memory[self.statics['s_classic_kernel']] = timed
         self.timed_fault = timed_fault
@@ -243,6 +281,9 @@ class Kernel:
         self.group_modes = []
         self.pending_samples = []
         self.checked_samples = []
+        self.expected_samples = []
+        self.sample_cursor = sample_group
+        self.memory[self.statics['s_classic_sample_group']] = sample_group
         self.sample_mismatches = 0
         # TLS CPU-window state (ShaResourcePolicy.h): tls=1 record I/O, tls=2 handshake.
         self.memory[self.statics['secureTransportCpuSessions()::sessions']] = int(tls > 0)
@@ -282,6 +323,7 @@ class Kernel:
             self.memory[r[2] + 332 + 4*i] = 0xffffffff if network_meets else 0
         self.memory[r[3] + 16] = self.memory[r[3] + 20] = 0
         self.memory[r[3] + 136] = 0
+        self.memory[r[3] + self.RESULT_TIMED_KERNEL] = 0
         for i in range(20):
             self.memory[r[4] + 4*i] = int.from_bytes(header[4*i:4*i+4], 'big')
             self.memory[r[2] + 252 + 4*i] = int.from_bytes(header[4*i:4*i+4], 'little')
@@ -404,6 +446,11 @@ class Kernel:
                     assert not self.memory_locked
                     assert not self.pending_samples, 'timed sample not checked before the next group'
                     self.timed_group = self.memory[self.statics['s_classic_kernel']] == 1
+                    # The kernel takes this group's sample slot before the lock.
+                    assert self.memory[self.statics['s_classic_sample_group']] == (self.sample_cursor + 1) & 0xffffffff, \
+                        'sample group counter not advanced exactly once per group'
+                    self.group_offset = self.sample_offset(self.sample_cursor)
+                    self.sample_cursor = (self.sample_cursor + 1) & 0xffffffff
                     self.group_snapshot = (len(self.completed), len(self.controls), self.writes,
                                            self.digest_reads, self.busy)
                     self.memory_locked, self.memory_ps = True, self.ps
@@ -416,11 +463,10 @@ class Kernel:
                     self.memory_locked, self.ps = False, self.memory_ps
                     self.groups.append(len(self.completed) - self.group_began)
                     self.group_modes.append(self.timed_group)
-                    if self.timed_group:
-                        first = len(self.completed) - self.groups[-1]
-                        self.pending_samples = [
-                            (int.from_bytes(h[76:80], 'little'), d) for h, d in self.completed[first:]
-                            if int.from_bytes(h[76:80], 'little') & self.SAMPLE_MASK == self.SAMPLE_RESIDUE]
+                    if self.timed_group and self.group_offset is not None and self.group_offset < self.groups[-1]:
+                        h, d = self.completed[len(self.completed) - self.groups[-1] + self.group_offset]
+                        self.pending_samples = [(int.from_bytes(h[76:80], 'little'), d)]
+                        self.expected_samples.append(self.pending_samples[0][0])
                     self.timed_group = False
                 elif name == 'esp_ipc_isr_stall_other_cpu':
                     assert self.memory_locked and not self.other_cpu_stalled
@@ -517,11 +563,8 @@ class Kernel:
                 assert timed_fault in self.checked_samples, 'mismatch on a nonce that was not the fault'
             modes = self.group_modes
             assert modes == sorted(modes, reverse=True), f'timed kernel resumed after the switch {modes}'
-            expected_samples = [int.from_bytes(h[76:80], 'little') for h, _ in self.completed]
-            expected_samples = [n for n, t in zip(expected_samples, [t for n, t in zip(self.groups, modes) for _ in range(n)])
-                                if t and n & self.SAMPLE_MASK == self.SAMPLE_RESIDUE]
-            assert [n for n in self.checked_samples if n != timed_fault or not switched] == expected_samples, \
-                f'samples checked {self.checked_samples} != {expected_samples}'
+            assert self.checked_samples == self.expected_samples, \
+                f'samples checked {self.checked_samples} != {self.expected_samples}'
         # Interrupts stay masked for one locked group: bounded, and full-length
         # except where a filter hit or the range end cuts it short.
         assert all(0 <= g <= self.GROUP for g in self.groups), f'lock held for {max(self.groups)} nonces'
@@ -560,6 +603,10 @@ class Kernel:
         assert self.digest_reads == expected_count + 7 * len(hits), 'wrong filter branch'
         assert self.memory[0x20001000 + 8] == expected_count, 'wrong completed-nonce count'
         assert self.read_byte(0x20001000 + 136) == int(hit and candidates), 'wrong candidate presence'
+        # The pre-submit re-check switches kernels only for a candidate the timed
+        # kernel produced: the flag must name the kernel of the recording group.
+        assert self.read_byte(0x20001000 + self.RESULT_TIMED_KERNEL) == int(
+            bool(hit and candidates and self.group_modes and self.group_modes[-1])), 'candidate kernel flag wrong'
         if hit and candidates:
             saved = bytes(self.read_byte(0x20001000 + 56 + i) for i in range(80))
             assert saved in hits, 'candidate header/nonce ownership mismatch'
@@ -621,19 +668,40 @@ def timed_checks(kernel, headers, original, hit_nonce):
     print('SIMULATED timed full-padding range; both timed paddings fail when LOAD disturbs words 9..14.')
     # Runtime net: a wrong timed result on a sampled nonce must switch to the
     # polled kernel for good and hash that whole group again, with nothing lost
-    # or counted twice. The sample sits at range offset 0, mid-group, on the
-    # last and first nonce of a group, in a later group, and on the range's last
-    # nonce; with and without the TLS window.
-    for count, offset, tls in ((4096, 0, 1), (4096, 100, 0), (4096, 1023, 1), (4096, 1024, 0),
-                               (4096, 2533, 1), (4096, 4095, 0), (16384, 2533, 1)):
-        sample = (0xfffff000 & ~Kernel.SAMPLE_MASK) + Kernel.SAMPLE_RESIDUE
-        base = (sample - offset) & 0xffffffff
+    # or counted twice. The sampled offset rotates; here it is placed on the
+    # first nonce, mid-group and the last nonce of a group, in the range's first
+    # and later groups (the last group's last nonce is the range's last nonce);
+    # with and without the TLS window.
+    base = 0xfffff000
+    for count, group, offset, tls in ((4096, 0, 0, 1), (4096, 0, 100, 0), (4096, 0, 1023, 1),
+                                      (4096, 1, 0, 0), (4096, 2, 485, 1), (4096, 3, 1023, 0),
+                                      (16384, 2, 485, 1)):
+        sample = (base + group * Kernel.GROUP + offset) & 0xffffffff
         header = bytes(76) + base.to_bytes(4, 'little')
-        kernel.run(header, 2, 0, count, tls=tls, timed=1, timed_fault=sample)
+        kernel.run(header, 2, 0, count, tls=tls, timed=1, timed_fault=sample,
+                   sample_group=Kernel.cursor_for(offset, group))
         assert kernel.sample_mismatches == 1 and kernel.memory[kernel.statics['s_classic_kernel']] == 0
-        assert kernel.group_modes.count(True) == offset // Kernel.GROUP
-        print(f'SIMULATED timed fault at sampled nonce offset {offset}: switched to polled after '
+        assert kernel.group_modes.count(True) == group
+        print(f'SIMULATED timed fault at sampled offset {offset} of group {group}: switched to polled after '
               f'{kernel.group_modes.count(True)} timed groups, {len(kernel.completed)} nonces exact.')
+    # A sampled mismatch in a group that ALSO ends on a real filter hit: the
+    # group is hashed again (polled) and only then is the hit recorded, as a
+    # candidate (range ends on it), as a non-candidate (range continues), or as
+    # a block that only meets the network target.
+    hit_offset, sample_offset = 600, 100
+    hit_base = (hit_nonce - hit_offset) & 0xffffffff
+    header = original[:76] + hit_base.to_bytes(4, 'little')
+    fault = (hit_base + sample_offset) & 0xffffffff
+    for share, network, count, wanted in ((0.0, False, 2048, hit_offset + 1), (2.0, False, 2048, 2048),
+                                          (2.0, True, 2048, hit_offset + 1)):
+        _, hit = kernel.run(header, 2, 0, count, tls=1, share_difficulty=share, network_meets=network,
+                            timed=1, timed_fault=fault, sample_group=Kernel.cursor_for(sample_offset))
+        assert hit and kernel.sample_mismatches == 1 and len(kernel.completed) == wanted
+        assert kernel.group_modes[0] is False, 'the faulted group was not hashed again with the polled kernel'
+    print('SIMULATED sampled mismatch in a group that ends on a filter hit: group re-hashed, hit recorded from the polled kernel.')
+    # Over 4,096 consecutive groups every in-group offset is sampled once.
+    offsets = [Kernel.sample_offset(g) for g in range(4 * Kernel.GROUP)]
+    assert sorted(o for o in offsets if o is not None) == list(range(Kernel.GROUP))
     return hits, total
 
 
@@ -644,6 +712,7 @@ def main():
     p.add_argument('--cases', type=int, default=10000)
     args = p.parse_args()
     kernel = Kernel(args.elf, args.toolchain)
+    kernel.check_wiring(args.elf, args.toolchain)
     rng = random.Random(0x4e657264)
     headers = []
     vectors = Path(__file__).resolve().parents[1] / 'test/native_mining_validation.cpp'
