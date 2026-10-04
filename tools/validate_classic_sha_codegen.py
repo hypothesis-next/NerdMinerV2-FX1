@@ -36,12 +36,17 @@ class Kernel:
     # Timed kernel, in CPU cycles from the command store (W390.1 bench, classic
     # ESP32 rev 3.1, other CPU stalled; source constants in ClassicKernelPolicy.h):
     # START/CONTINUE -> next command 56 clean (54 wrong), kept at 64; LOAD -> next
-    # command or digest read 2 clean (1 wrong), kept at 6; CONTINUE -> block-3
-    # padding >= 2 clean, kept at 6. Writes right after block-1 START (any word)
-    # and after block-3 START (words 8..15) were measured safe at 0 cycles.
+    # command or digest read 2 clean (1 wrong), kept at 6. All SHA_TEXT words
+    # latch within 10 cycles of START/CONTINUE (bench probe); on a rev 3.1 CYD a
+    # write with NO wait after START gave every nonce wrong (2026-10-04), so any
+    # write while the engine is busy must come at least 16 cycles after the
+    # START/CONTINUE store: block-2 words after block-1 START, block-3 padding
+    # after CONTINUE, next nonce's block-1 words 8..15 after block-3 START.
+    # Every timed wait counts only cycles proven by a ccount read (proven_elapsed).
     TIMED_COMMAND_WAIT = 64
     TIMED_LOAD_WAIT = 6
-    TIMED_PADDING_WAIT = 6
+    TIMED_LATCH_WAIT = 16    # START -> any SHA_TEXT write while busy
+    TIMED_PADDING_WAIT = 16  # CONTINUE -> block-3 padding
     TIMED_GROUP_PRIME_WRITES = 8  # next-nonce block-1 words 8..15, once per group
     # Runtime net: the nonce re-hashed in software after its group.
     SAMPLE_MASK, SAMPLE_RESIDUE = 4095, 0x9e5
@@ -110,7 +115,7 @@ class Kernel:
                     return 1
                 return 0
             if self.timed_group:
-                assert self.phase == 5 and self.cycles - self.command_cycle >= self.TIMED_LOAD_WAIT, \
+                assert self.phase == 5 and self.proven_elapsed() >= self.TIMED_LOAD_WAIT, \
                     'timed digest read before the final LOAD settled'
             assert not self.busy, 'digest read before idle'
             assert self.memory_locked, 'digest read without shared-memory lock'
@@ -184,22 +189,36 @@ class Kernel:
     def timed_wait(self):
         return self.TIMED_LOAD_WAIT if self.command == 0x98 else self.TIMED_COMMAND_WAIT
 
+    def proven_elapsed(self):
+        # Cycles since the last command store, as proven by the kernel's own
+        # latest `rsr ccount` read after it. Instructions executed since are not
+        # credited: 531806c wrote block 2 fourteen instructions after START with
+        # no counter wait and failed on a rev 3.1 CYD; the counter wait fixed it.
+        if self.last_ccount is None or self.last_ccount < self.command_cycle:
+            return -1
+        return self.last_ccount - self.command_cycle
+
     def timed_engine_idle(self):
-        return self.command is None or self.cycles - self.command_cycle >= self.timed_wait()
+        return self.command is None or self.proven_elapsed() >= self.timed_wait()
 
     def check_timed_write(self, word):
         # Busy-engine writes are allowed only where the bench measured them safe.
         if self.timed_engine_idle():
             return
-        elapsed = self.cycles - self.command_cycle
-        if self.phase == 1:      # block 1 latched: block-2 words at once
+        elapsed = self.proven_elapsed()
+        if self.phase == 1:      # block 1 compressing: block-2 words once latched
+            assert elapsed >= self.TIMED_LATCH_WAIT, \
+                f'SHA_TEXT word {word} written {elapsed} cycles after block-1 START (latch needs {self.TIMED_LATCH_WAIT})'
             return
         if self.phase == 2:      # block 2 compressing: block-3 padding words
             assert word >= 8, 'timed write of words 0..7 during block 2'
-            assert elapsed >= self.TIMED_PADDING_WAIT, f'block-3 padding {elapsed} cycles after CONTINUE'
+            assert elapsed >= self.TIMED_PADDING_WAIT, \
+                f'block-3 padding word {word} written {elapsed} cycles after CONTINUE (latch needs {self.TIMED_PADDING_WAIT})'
             return
-        if self.phase == 4:      # block 3 latched: next nonce's block-1 words 8..15
+        if self.phase == 4:      # block 3 compressing: next nonce's block-1 words 8..15
             assert word >= 8, 'timed write of words 0..7 during block 3'
+            assert elapsed >= self.TIMED_LATCH_WAIT, \
+                f'SHA_TEXT word {word} written {elapsed} cycles after block-3 START (latch needs {self.TIMED_LATCH_WAIT})'
             return
         raise AssertionError(f'SHA_TEXT written {elapsed} cycles after LOAD')
 
@@ -213,14 +232,14 @@ class Kernel:
 
     def run(self, header, delay=2, initial_level=0, nonces=1, cancel_after=None, tls=0,
             share_difficulty=0.0, network_meets=False, full_padding=0, cpi=None, load_clobbers=False,
-            timed=0, timed_fault=None, seed=0):
+            timed=0, timed_fault=None):
         self.memory = {self.generation: 19}
         self.memory[self.statics['s_classic_kernel']] = timed
         self.timed_fault = timed_fault
         self.timed_group = False
         self.cycles = 0
         self.command, self.command_cycle = None, 0
-        cycle_rng = random.Random(seed)
+        self.last_ccount = None
         self.group_modes = []
         self.pending_samples = []
         self.checked_samples = []
@@ -276,9 +295,12 @@ class Kernel:
             op, a, length = self.code[pc]
             pc += length
             instructions += 1
-            # Modelled CPU cycles, as `rsr ccount` reads them: a varying cost per
-            # instruction, so a wait that holds only for one instruction count fails.
-            self.cycles += cycle_rng.choice((1, 1, 1, 2, 3))
+            # Modelled CPU cycles, as `rsr ccount` reads them: ONE cycle per
+            # instruction, the fewest the single-issue core can take. Every timing
+            # rule here is a lower bound, so this is the conservative model: a
+            # write with no ccount wait gets credit only for the instructions
+            # before it (a random higher cost let unwaited writes pass by chance).
+            self.cycles += 1
             assert instructions < 10000 * nonces, 'kernel failed to terminate'
             value = None
             if op == 'entry': r[1] -= int(a[1], 0)
@@ -291,7 +313,8 @@ class Kernel:
                 r[10:12] = returned
             elif op == 'memw': self.command_needs_barrier = False
             elif op in ('rsync', 'nop'): pass
-            elif op == 'rsr.ccount': value = self.cycles
+            elif op == 'rsr.ccount':
+                value = self.last_ccount = self.cycles
             elif op == 'l32r': value = self.read(branch(a[1]))
             elif op == 'l32i': value = self.read(reg(a[1]) + int(a[2], 0))
             elif op == 's32i': self.write(reg(a[1]) + int(a[2], 0), reg(a[0]))
@@ -548,7 +571,7 @@ def timed_checks(kernel, headers, original, hit_nonce):
     """The timed kernel under the same cases as the polled one, plus its runtime net."""
     hits = total = 0
     for i, header in enumerate(headers):
-        count, hit = kernel.run(header, i % 5, i % 5, tls=i % 3, timed=1, seed=i)
+        count, hit = kernel.run(header, i % 5, i % 5, tls=i % 3, timed=1)
         total += count
         hits += hit
     for count, cancel_after, start, tls in ((4096, None, 0xfffff000, 1), (16384, None, 0xfffff000, 1),
@@ -557,7 +580,7 @@ def timed_checks(kernel, headers, original, hit_nonce):
                                             (4096, 30, 0xfffff123, 0), (4096, 1023, 0xfffff000, 1),
                                             (4096, 1024, 0xfffff123, 1), (1024, 0, 0xfffff000, 1)):
         header = bytes(76) + start.to_bytes(4, 'little')
-        kernel.run(header, 2, 0, count, cancel_after, tls=tls, timed=1, seed=count)
+        kernel.run(header, 2, 0, count, cancel_after, tls=tls, timed=1)
         print(f'SIMULATED timed range: requested={count}, cancel_after={cancel_after}, tls={tls}, '
               f'completed={len(kernel.completed)}, samples={len(kernel.checked_samples)}, '
               f'cycles/nonce={kernel.cycles / max(1, len(kernel.completed)):.0f} (modelled)')
@@ -581,7 +604,7 @@ def timed_checks(kernel, headers, original, hit_nonce):
     assert hit and len(kernel.completed) == 6
     print('SIMULATED timed candidate prefix/suffix, non-candidate hits, later-group and network-only candidates.')
     for i, header in enumerate(headers[:200]):
-        kernel.run(header, 0, i % 5, tls=i % 3, full_padding=1, timed=1, seed=i)
+        kernel.run(header, 0, i % 5, tls=i % 3, full_padding=1, timed=1)
     header = bytes(76) + (0xfffff123).to_bytes(4, 'little')
     kernel.run(header, 2, 0, 3000, tls=1, full_padding=1, timed=1)
     # The timed kernel writes either padding during block 2, BEFORE the first
