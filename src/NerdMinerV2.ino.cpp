@@ -109,22 +109,22 @@ void setup()
   // Setup the buttons
   #if defined(PIN_BUTTON_1) && !defined(PIN_BUTTON_2) //One button device
     button1.setPressMs(5*SECOND_MS);
-    button1.attachClick(switchToNextScreen);
-    button1.attachDoubleClick(alternateScreenRotation);
-    button1.attachLongPressStart(reset_configuration);
-    button1.attachMultiClick(alternateScreenState);
+    button1.attachClick(SCREEN_WAKE_OR(switchToNextScreen));
+    button1.attachDoubleClick(SCREEN_WAKE_OR(alternateScreenRotation));
+    button1.attachLongPressStart(SCREEN_WAKE_OR(reset_configuration));
+    button1.attachMultiClick(SCREEN_WAKE_OR(alternateScreenState));
   #endif
 
   #if defined(PIN_BUTTON_1) && defined(PIN_BUTTON_2) //Button 1 of two button device
     button1.setPressMs(5*SECOND_MS);
-    button1.attachClick(alternateScreenState);
-    button1.attachDoubleClick(alternateScreenRotation);
+    button1.attachClick(SCREEN_WAKE_OR(alternateScreenState));
+    button1.attachDoubleClick(SCREEN_WAKE_OR(alternateScreenRotation));
   #endif
 
   #if defined(PIN_BUTTON_2) //Button 2 of two button device
     button2.setPressMs(5*SECOND_MS);
-    button2.attachClick(switchToNextScreen);
-    button2.attachLongPressStart(reset_configuration);
+    button2.attachClick(SCREEN_WAKE_OR(switchToNextScreen));
+    button2.attachLongPressStart(SCREEN_WAKE_OR(reset_configuration));
   #endif
 
   /******** INIT NERDMINER ************/
@@ -234,6 +234,10 @@ void loop() {
   #ifdef PIN_BUTTON_2
     button2.tick();
   #endif
+
+#ifdef BUTTON_SCREEN_SLEEP_SECONDS
+  screenSleepTick();
+#endif
 
 #ifdef TOUCH_ENABLE
   touchHandler.isTouched();
