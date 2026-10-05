@@ -8,6 +8,43 @@ pool support, better dashboards and usability, bug fixes, and continued
 firmware development. FX1 is not an official BitMaker-hub, NerdMiner,
 HeliosPool, or pool-operator release.
 
+## About this fork (hypothesis-next)
+
+Speed work on top of FX1, offered back upstream as pull requests. `main` here is FX1 unchanged
+apart from this section; the changes live on their own branches.
+
+**What we changed and why.** The SHA-256 hardware loop spent most of its time waiting on and
+talking to the SHA engine, not hashing. Each change below does less of that, and each checks
+itself at boot against real Bitcoin block hashes and falls back to FX1's own loop if it fails.
+
+| Branch | What it does | Gain (on-device / pool) |
+|---|---|---|
+| `classic-esp32-faster-sha-loop` ([#2](https://github.com/samkruzlic/NerdMinerV2-FX1/pull/2)) | Classic ESP32: fewer SHA register writes per nonce, bookkeeping out of the locked loop, codegen-checker fix | ~+9.5 % |
+| `cyd-screen-sleep` ([#3](https://github.com/samkruzlic/NerdMinerV2-FX1/pull/3)) | CYD: optional screen sleep after 30 s, tap to wake; drawing paused while dark | ~+13 % while dark |
+| `classic-esp32-timed-kernel` ([#4](https://github.com/samkruzlic/NerdMinerV2-FX1/pull/4)) | Classic ESP32 rev 3 at 240 MHz: fixed measured waits instead of polling, next block written while the engine is busy, software spot-checks with a one-way fallback | CYD ~468 → ~679 kH/s (screen on), ~760 with screen sleep |
+| `s3-c3-batched-sha` | ESP32-S3 / C3: 32 nonces per batch, fewer register writes; plus a fix for builds stalling on an unread USB console | S3 ~250 → ~432, C3 ~262 → ~438 kH/s |
+
+**How it was tested.** Host tests and FX1's emitted-code checker, each new check first run
+against a deliberately broken version; on-chip differential soaks (every nonce compared with
+FX1's own loop and spot-checked in software, up to 100 M nonces under five CPU/SPI/Wi-Fi loads);
+a local test pool that re-checks every share; hour and 24 h runs on public pools.
+Boards that run these builds: ESP32-2432S028 "CYD" ×2 (classic ESP32 rev 3.1), LilyGO
+T-Display S3 and Waveshare S3-Zero (ESP32-S3 rev 0.2), an ESP32-S3 devkit, an ESP32-C3
+super-mini (rev 0.4). An ideaspark 1.14" board (classic ESP32 rev 1.0) runs the #2 loop.
+
+**Still open.** The timed kernel is proven on rev 3.1 only (rev 3.0 is eligible but untested;
+older chips keep the #2 loop until measured). Its waits are measured, not documented, so it keeps
+its software spot-checks for good. A version without the other-CPU stall was measured too: no faster on
+a busy board, and about 1 hash in 10,000 wrong, so it was dropped. The C3 build has twice lost its pool after weak Wi-Fi and
+not recovered. Only one board per chip revision has been tested.
+
+**Thanks** to [samkruzlic](https://github.com/samkruzlic) for FX1: its tests, its codegen
+checker and its careful classic-ESP32 loop made this work possible to measure and prove. And to
+BitMaker for the original NerdMiner.
+
+Done with Claude (Anthropic) under the fork owner's direction; please review it like any outside
+contribution.
+
 ## V1.8.3-FX1 RC1
 
 This is a release candidate (RC/Beta), physically validated on one
