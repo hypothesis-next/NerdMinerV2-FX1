@@ -1,5 +1,7 @@
 # NerdMiner V2 FX1
 
+[AI DISCLOSAURE: USE OF CLAUDE OPUS 5.5 FOR THE TESTING, ITERATIONS AND CODING UNDER MY DIRECTION AND GUIDANCE]
+
 An unofficial open-source fork of
 [NerdMiner V2](https://github.com/BitMaker-hub/NerdMiner_v2) that advances the
 firmware beyond the upstream V1.8.3 baseline. FX1 pursues higher real mining
