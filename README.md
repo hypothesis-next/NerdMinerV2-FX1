@@ -24,7 +24,7 @@ itself at boot against real Bitcoin block hashes and falls back to FX1's own loo
 |---|---|---|---|
 | `classic-esp32-faster-sha-loop` | [#2](https://github.com/samkruzlic/NerdMinerV2-FX1/pull/2) | Classic ESP32: fewer SHA register writes per nonce, bookkeeping out of the locked loop, codegen-checker fix | ~+9.5 % |
 | `cyd-screen-sleep` | [#3](https://github.com/samkruzlic/NerdMinerV2-FX1/pull/3) | CYD: optional screen sleep after 30 s, tap to wake; nothing is drawn while dark | ~+13 % while dark |
-| `classic-esp32-timed-kernel` | [#4](https://github.com/samkruzlic/NerdMinerV2-FX1/pull/4) | Classic ESP32 rev 3 at 240 MHz: fixed measured waits instead of polling, next block written while the engine is busy, software spot-checks with a one-way fallback (builds on #2) | CYD ~468 → ~680 kH/s screen on, ~760 with screen sleep |
+| `classic-esp32-timed-kernel` | [#4](https://github.com/samkruzlic/NerdMinerV2-FX1/pull/4) | Classic ESP32 rev 3 at 240 MHz: fixed measured waits instead of polling, next block written while the engine is busy, software spot-checks with a one-way fallback (builds on #2) | CYD ~468 → ~680 kH/s screen on; ~760 with #3's screen sleep added (that combination is not on a branch here) |
 | `s3-c3-batched-sha` | [#5](https://github.com/samkruzlic/NerdMinerV2-FX1/pull/5) | ESP32-S3 / C3: 32 nonces per batch, fewer register writes; a fix for builds stalling on an unread USB console; optional T-Display S3 screen sleep | S3 ~250 → ~432, C3 ~262 → ~438 kH/s |
 
 **Which build do I use?** Install [PlatformIO](https://platformio.org/), then:
